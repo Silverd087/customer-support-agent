@@ -21,4 +21,13 @@ graph.add_edge("echo",END)
 
 agent = graph.compile()
 
-print(agent.invoke({"messages":["hello"]}))
+messages = []
+while True:
+    message = input("\nwhat is your question? ")
+    if message.lower() in ["exit","q"]:
+        break
+    messages.append(message)
+    for event in agent.stream({"messages":messages}):
+        for v in event.values():
+            print(v)
+    
