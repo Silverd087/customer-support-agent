@@ -1,10 +1,10 @@
-# Building a Customer Support Assistant: LangGraph + RAG + Voice + Email + WhatsApp
+# Building a Customer Support Assistant: Multi-Agent LangGraph + RAG + Voice + Email + WhatsApp
 
 A learning-oriented architecture guide for a multi-channel (text, voice, email, WhatsApp) customer support agent, aimed at production-grade quality. You write the code; use this as the reference to check your work against.
 
 ## 1. The core idea
 
-One reasoning "brain" (a LangGraph graph), one knowledge source (a RAG pipeline over your docs), one **tool** for looking up live data (PostgreSQL), and multiple *channels* that feed into the same brain: text chat, voice (Wispr Flow in / ElevenLabs out), email (Gmail), and WhatsApp (Meta Cloud API).
+An **orchestrator agent** that decides what needs to happen, backed by **specialist agents** it can call as tools — a RAG specialist (grounds answers in your docs), a DB specialist (looks up live data, can create pending actions like refunds), and a Gmail specialist (reads/drafts support emails). Multiple *channels* feed into the same orchestrator: text chat, voice (Wispr Flow in / ElevenLabs out), email (Gmail), and WhatsApp (Meta Cloud API).
 
 ```mermaid
 flowchart LR
@@ -15,140 +15,146 @@ flowchart LR
         W[WhatsApp<br/>Meta Cloud API]
     end
 
-    A --> D
-    B --> D
-    C --> D
-    W --> D
+    A --> O
+    B --> O
+    C --> O
+    W --> O
 
-    subgraph Core["LangGraph agent (the brain)"]
-        D[classify_intent] --> E[retrieve_context<br/>RAG]
-        E --> T{needs live data?}
-        T -->|yes| Q[query_database tool]
-        Q --> F
-        T -->|no| F[generate_response]
-        F --> G{needs escalation?}
-        G -->|yes| H[human_handoff]
-        G -->|no| I[format_for_channel]
+    subgraph Core["Orchestrator agent"]
+        O[orchestrator] --> S{tool call?}
+        S -->|rag_specialist| R[RAG specialist]
+        S -->|db_specialist| D[DB specialist]
+        S -->|gmail_specialist| G[Gmail specialist]
+        S -->|escalate_to_human| H[human handoff]
+        S -->|done| F[final answer]
+        R --> O
+        D --> O
+        G --> O
     end
 
-    I --> J[Text reply]
-    I --> K[ElevenLabs TTS<br/>voice reply]
-    I --> L[Gmail draft/reply]
-    I --> X[WhatsApp reply]
+    F --> J[Text reply]
+    F --> K[ElevenLabs TTS<br/>voice reply]
+    F --> L[Gmail draft/reply]
+    F --> X[WhatsApp reply]
 
-    M[(Vector store:<br/>your support docs)] --- E
-    N[(PostgreSQL:<br/>orders, tickets, accounts)] --- Q
+    M[(Vector store:<br/>your support docs)] --- R
+    N[(PostgreSQL:<br/>orders, tickets, accounts)] --- D
 ```
 
-Why structure it this way: the channel (how the message arrives) and the reasoning (what to do about it) are separate concerns. Keeping them separate means you build the hard part — the agent's reasoning and grounding in your docs — once, and each channel is just a thin adapter that converts its input into a common message format and converts the output back into text, audio, or an email draft.
+Why this shape instead of a fixed pipeline (classify → retrieve → generate): real support requests are often compound — "I want a refund for order #123" needs an order lookup *and* a policy lookup, and the second one might depend on the first. A fixed linear pipeline can't express "call X, then based on the result, maybe call Y" without hand-coding a new branch for every combination. A single orchestrator that can call any specialist, in any order, and chain results, handles this naturally — the same mechanism you'd use for a single tool call scales to a compound request without new graph edges.
 
-## 2. LangGraph: the agent's reasoning core
+The channel/reasoning separation from before still holds: each channel is a thin adapter converting its input into a message and the orchestrator's output back into text, audio, or a draft — you build the reasoning once.
 
-LangGraph models the agent as a **state graph**: a shared state object flows through **nodes** (Python functions), and **edges** decide what runs next, including conditional branches and loops. This is a better fit for support agents than a single prompt because real support conversations branch (is this a billing question or a bug report?), loop (ask a clarifying question, wait, continue), and sometimes need a human.
+## 2. LangGraph: orchestrator + specialists
 
-Core building blocks:
+Each **specialist is its own small agent** — a tiny `StateGraph` with an LLM bound to a narrow set of tools, wrapped in a `@tool` function so the orchestrator can call the whole specialist the same way it'd call any single tool. The **orchestrator** is built exactly the same way, just one level up: an LLM bound to the specialists (as tools), looping until it has enough to answer.
 
-- **State**: a `TypedDict` or Pydantic model holding the conversation so far, retrieved context, detected intent, and a flag for escalation.
-- **Nodes**: plain functions that read state and return updates, e.g. `classify_intent`, `retrieve_context`, `generate_response`, `human_handoff`.
-- **Edges**: `add_edge` for a fixed next step, `add_conditional_edges` for branching (e.g., route to `human_handoff` if the model isn't confident, or if the customer asks for a person).
-- **Checkpointer**: LangGraph's memory layer (e.g., `MemorySaver`, or a persistent store for production) that lets a conversation resume across turns — essential for a support agent since customers reply minutes or hours later.
+Core building blocks (same primitives as always, applied twice):
+
+- **State**: the orchestrator's state holds the conversation (`messages`) and channel info. Specialists can use a minimal state (just `messages`) since they're invoked fresh per call — see the note below on memory.
+- **Nodes**: an `agent` node (the LLM deciding what to do) and a `tools` node (`ToolNode`) for both the orchestrator and each specialist.
+- **`tools_condition`**: LangGraph's prebuilt conditional edge — routes to the tools node if the model requested a tool call, otherwise ends. Same building block reused at every level.
+- **Checkpointer**: attached to the **orchestrator's** compiled graph only. Specialists are invoked with `.invoke({"messages": [...]})` fresh each time — they don't carry conversation memory of their own; the orchestrator's checkpointed history is the single source of truth for "what has this customer said so far."
 
 Skeleton:
 
 ```python
-from typing import TypedDict, List, Optional
-from langgraph.graph import StateGraph, END
+from typing import Annotated, List
+from operator import add
+from typing_extensions import TypedDict
+from langgraph.graph import StateGraph, START, END, MessagesState
+from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage
 
 class SupportState(TypedDict):
-    messages: List[dict]          # conversation history
-    channel: str                  # "chat" | "voice" | "email"
-    intent: Optional[str]
-    context_chunks: List[str]     # retrieved RAG passages
-    confidence: float
-    needs_human: bool
+    messages: Annotated[List, add]
+    channel: str
 
-def classify_intent(state: SupportState) -> dict:
-    # small, fast LLM call: billing / technical / account / other
-    ...
-    return {"intent": intent}
+# --- RAG specialist: its own tiny agent, one tool ---
+rag_llm = llm.bind_tools([search_knowledge_base])  # search_knowledge_base defined in §3
 
-def retrieve_context(state: SupportState) -> dict:
-    query = state["messages"][-1]["content"]
-    chunks = vector_store.similarity_search(query, k=4)
-    return {"context_chunks": [c.page_content for c in chunks]}
+def rag_agent_node(state: MessagesState):
+    return {"messages": [rag_llm.invoke(state["messages"])]}
 
-def generate_response(state: SupportState) -> dict:
-    # LLM call grounded in context_chunks, with a system prompt that
-    # instructs it to say "I don't know" rather than guess, and to
-    # cite which doc it used (for your own debugging, not necessarily shown to user)
-    ...
-    return {"messages": state["messages"] + [reply], "confidence": conf}
+rag_graph = StateGraph(MessagesState)
+rag_graph.add_node("agent", rag_agent_node)
+rag_graph.add_node("tools", ToolNode([search_knowledge_base]))
+rag_graph.add_edge(START, "agent")
+rag_graph.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
+rag_graph.add_edge("tools", "agent")
+rag_agent = rag_graph.compile()
 
-def route_after_generate(state: SupportState) -> str:
-    if state["confidence"] < 0.5 or state["needs_human"]:
-        return "human_handoff"
-    return "format_for_channel"
+@tool
+def rag_specialist(question: str) -> str:
+    """Ask the knowledge-base specialist about policies, FAQs, or troubleshooting
+    steps. Always use this for anything involving a policy, price, timeline, or
+    procedure — never answer those from memory."""
+    result = rag_agent.invoke({"messages": [HumanMessage(question)]})
+    return result["messages"][-1].content
 
-def human_handoff(state: SupportState) -> dict:
-    # create a ticket / notify a human, or in the Gmail channel,
-    # save as a draft instead of auto-sending
-    ...
+# db_specialist and gmail_specialist follow the identical shape (§6, §7)
+
+# --- Orchestrator: same pattern, one level up ---
+specialists = [rag_specialist, db_specialist, gmail_specialist, escalate_to_human]  # §8
+orchestrator_llm = llm.bind_tools(specialists)
+
+def orchestrator_node(state: SupportState):
+    return {"messages": [orchestrator_llm.invoke(state["messages"])]}
 
 graph = StateGraph(SupportState)
-graph.add_node("classify_intent", classify_intent)
-graph.add_node("retrieve_context", retrieve_context)
-graph.add_node("generate_response", generate_response)
-graph.add_node("human_handoff", human_handoff)
-graph.add_node("format_for_channel", format_for_channel)
-
-graph.set_entry_point("classify_intent")
-graph.add_edge("classify_intent", "retrieve_context")
-graph.add_edge("retrieve_context", "generate_response")
-graph.add_conditional_edges("generate_response", route_after_generate,
-                             {"human_handoff": "human_handoff",
-                              "format_for_channel": "format_for_channel"})
-graph.add_edge("human_handoff", END)
-graph.add_edge("format_for_channel", END)
+graph.add_node("orchestrator", orchestrator_node)
+graph.add_node("specialists", ToolNode(specialists))
+graph.add_edge(START, "orchestrator")
+graph.add_conditional_edges("orchestrator", tools_condition, {"tools": "specialists", END: END})
+graph.add_edge("specialists", "orchestrator")
 
 app = graph.compile(checkpointer=MemorySaver())
 ```
 
-Each channel calls `app.invoke(...)` (or `.stream(...)`) with a `thread_id` per conversation, and the checkpointer handles remembering where things left off.
+Each channel calls `app.invoke(...)` (or `.stream(...)`) with a `thread_id` per conversation, same as before — this part of the design doesn't change regardless of what's happening inside the orchestrator.
 
-## 3. RAG: grounding answers in your own docs
+**Why specialists as wrapped agents, not flat tools:** this is what makes the reflection pattern (§9) and per-domain customization possible without touching the orchestrator. The RAG specialist's internal subgraph can grow a self-critique step, use a different model, or add a second tool — none of that changes its `@tool` signature from the orchestrator's point of view. That isolation is the entire point of splitting into specialists instead of putting every tool flat on one agent.
 
-Right now your project folder has no documents yet — the first real step is dropping your support material in (FAQs, policy docs, product manuals, past resolved tickets) so the agent has something to ground answers in instead of hallucinating.
+**Trade-off worth knowing:** more LLM calls per turn than a flat single-agent design (orchestrator decides → specialist decides → specialist's tool executes → specialist composes → orchestrator composes), so latency and cost go up, especially noticeable on the voice channel. Worth it once you have several heterogeneous domains and want to evolve them independently; overkill if you only ever have one or two tools total.
 
-Pipeline:
+## 3. RAG: grounding answers, as a specialist
+
+Right now your project folder has no real documents yet — the first real step is dropping your support material in (FAQs, policy docs, product manuals, past resolved tickets) so the agent has something to ground answers in instead of hallucinating.
+
+Ingestion pipeline (unchanged regardless of architecture):
 
 1. **Ingest**: load files (PDF, markdown, HTML export from a help center, etc.).
-2. **Chunk**: split into ~300–800 token pieces with some overlap. Chunk by semantic unit (a whole FAQ entry, a whole policy paragraph) where possible rather than a fixed character count — this matters more for answer quality than embedding model choice.
-3. **Embed**: turn each chunk into a vector (OpenAI `text-embedding-3-small`, or a local model via `sentence-transformers` if you want to avoid API cost).
-4. **Store**: a vector database. For a learning project, `Chroma` (local, zero setup) or `FAISS` (in-memory) is enough; move to something like Pinecone/Weaviate/pgvector only once you need scale or multi-user filtering.
-5. **Retrieve**: at query time, embed the customer's question and pull the top-k nearest chunks.
-6. **Ground**: pass those chunks into the `generate_response` node's prompt, with an instruction to answer only from the provided context and say when it doesn't know.
+2. **Chunk**: split into ~300–800 token pieces with some overlap. Chunk by semantic unit (a whole FAQ entry, a whole policy paragraph) where possible rather than a fixed character count.
+3. **Embed**: turn each chunk into a vector (a local model via `sentence-transformers`/`langchain-huggingface` avoids per-call API cost; OpenAI/other embedding APIs are the alternative).
+4. **Store**: a vector database — `Chroma` (local, zero setup) is enough for a learning project; move to Pinecone/Weaviate/pgvector only once you need scale or multi-tenant filtering.
+
+**Retrieval and grounding now live inside the RAG specialist**, not a fixed `retrieve_context` node:
 
 ```python
-from langchain_community.document_loaders import DirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
+from langchain_core.tools import tool
 
-docs = DirectoryLoader("./knowledge_base", glob="**/*.md").load()
-chunks = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50).split_documents(docs)
-vector_store = Chroma.from_documents(chunks, OpenAIEmbeddings(), persist_directory="./vector_db")
+@tool
+def search_knowledge_base(query: str) -> str:
+    """Search Lumen Home's policy/FAQ/troubleshooting docs for information
+    relevant to the query. Returns the most relevant passages found."""
+    results = vectorstore.similarity_search_with_score(query=query, k=4)
+    return "\n\n".join(doc.page_content for doc, _ in results)
 ```
 
-Two practical tips worth internalizing early: keep a separate vector store per data-sensitivity tier if you ever mix public docs with internal/customer-specific data, and re-run ingestion whenever the source docs change — RAG quality degrades fast on stale content.
+The RAG specialist's own system prompt (in `rag_agent_node`'s bound LLM) carries the grounding instruction that used to live in `generate_response`: answer only from what `search_knowledge_base` returns, say when the docs don't cover something, don't invent policy details.
+
+One thing this architecture fixes on its own: earlier drafts of this project hard-filtered retrieval by a separately classified intent category (billing/technical/account/other), which risked missing chunks from mixed-topic docs like a general FAQ if the classifier's guess didn't match how a chunk got tagged at ingest time. Since the RAG specialist just searches directly with no hard category gate, that failure mode goes away — category metadata is still worth keeping on your chunks (useful for logging, or later as a soft boost rather than a hard filter), just not as something that can silently exclude the right answer.
+
+Two practical tips worth keeping from before: keep a separate vector store per data-sensitivity tier if you ever mix public docs with internal/customer-specific data, and re-run ingestion whenever the source docs change.
 
 ## 4. Voice in: Wispr Flow (speech-to-text)
 
-Wispr Flow exposes a developer API for turning audio into clean text (it also does filler-word removal and formatting, which is handy for feeding directly into an LLM). Treat it as the adapter that turns a voice channel into the same `messages` format your text channel already uses:
+Wispr Flow exposes a developer API for turning audio into clean text. It's a channel adapter — it doesn't change based on what's inside the orchestrator, it just turns speech into the same `messages` format every channel uses:
 
 ```python
-# Pseudocode — check api-docs.wisprflow.ai for current auth/endpoint details,
-# since this is a newer API and specifics may have moved since this guide was written.
+# Pseudocode — check api-docs.wisprflow.ai for current auth/endpoint details.
 transcript = wispr_flow_client.transcribe(audio_bytes)
 state["messages"].append({"role": "user", "content": transcript})
 result = app.invoke(state, config={"configurable": {"thread_id": call_id}})
@@ -156,10 +162,10 @@ result = app.invoke(state, config={"configurable": {"thread_id": call_id}})
 
 ## 5. Voice out: ElevenLabs (text-to-speech / conversational agent)
 
-You have two integration options:
+Two integration options, same as before:
 
-- **TTS-only** (recommended to start): your LangGraph app produces text as usual, and you call ElevenLabs' `text_to_speech.convert` to synthesize the reply. Simple, and you keep full control of the reasoning in LangGraph.
-- **ElevenLabs Conversational AI ("ElevenAgents")**: a hosted platform where ElevenLabs handles the voice turn-taking and can call out to tools/webhooks mid-conversation. More turnkey, but it shifts some orchestration out of LangGraph — worth exploring later once the text+RAG core works, not as the first thing you build.
+- **TTS-only** (recommended to start): the orchestrator produces text as usual, and you call ElevenLabs' `text_to_speech.convert` to synthesize the reply.
+- **ElevenLabs Conversational AI ("ElevenAgents")**: a hosted platform where ElevenLabs handles voice turn-taking and can call tools/webhooks mid-conversation. More turnkey, but shifts orchestration out of LangGraph — explore later, not first.
 
 ```python
 from elevenlabs.client import ElevenLabs
@@ -172,62 +178,138 @@ audio = client.text_to_speech.convert(
 )
 ```
 
-## 6. Email channel: Gmail MCP
+## 6. Email channel: the Gmail specialist
 
-For handling customer requests that arrive by email, connect Gmail as a tool the agent (or you, running it) can call: search threads, read a message, and create a draft reply. I found the official Gmail MCP connector for this session — connecting it would let LangGraph's `human_handoff`/`format_for_channel` nodes read incoming support emails and prepare replies directly.
-
-Design choice that matters here: **draft, don't auto-send.** Email is asynchronous and mistakes are costly (a wrong policy statement in writing is worse than a wrong sentence in a phone call), so the safest pattern is:
+Gmail becomes a specialist agent, same shape as the RAG specialist, bound to the Gmail MCP tools (`search_threads`, `get_thread`, `create_draft`, ...) instead of `search_knowledge_base`:
 
 ```python
-def format_for_channel_email(state: SupportState) -> dict:
-    reply_text = state["messages"][-1]["content"]
-    gmail.create_draft(thread_id=state["email_thread_id"], body=reply_text)
-    return {"status": "drafted_for_review"}
+gmail_llm = llm.bind_tools([search_threads, get_thread, create_draft])
+# ... identical StateGraph shape as rag_agent ...
+gmail_agent = gmail_graph.compile()
+
+@tool
+def gmail_specialist(request: str) -> str:
+    """Ask the email specialist to search, read, or draft a reply to a support
+    email. Only ever creates drafts for human review — never sends automatically."""
+    result = gmail_agent.invoke({"messages": [HumanMessage(request)]})
+    return result["messages"][-1].content
 ```
 
-A human reviews and hits send. Once you trust the agent's accuracy on a narrow set of intents (e.g., "where is my order"), you can selectively auto-send only for those, gated by the `confidence` field already in your state.
+The safety rule from before still applies, just enforced at the specialist's tool selection instead of a `format_for_channel_email` node: **the Gmail specialist's tool list only ever includes `create_draft`, never a send tool.** Email is asynchronous and mistakes are costly, so a human reviews and hits send. Once you trust the agent's accuracy on a narrow set of intents, you can selectively auto-send only for those — but that's a deliberate, later decision, not the default.
 
-## 7. Tool calling: querying your database (PostgreSQL)
+## 7. The DB specialist: live data lookups and pending actions
 
-RAG answers questions grounded in static docs. A lot of real support questions ("where's my order," "what plan am I on") need a lookup against live data instead — that's a **tool call**, not retrieval.
+The DB specialist handles two different kinds of database work, and they need different levels of caution:
 
-LangGraph's pattern: define tools with `@tool`, bind them to the model with `.bind_tools([...])`, execute them in a `ToolNode`, and route with the prebuilt `tools_condition` (goes to the tool node if the model asked for a tool call, otherwise continues).
+**Reads** (order status, account plan) — same rules as before:
 
 ```python
 from langchain_core.tools import tool
-from langgraph.prebuilt import ToolNode, tools_condition
 import psycopg
 
 @tool
 def get_order_status(order_id: str, customer_email: str) -> str:
-    """Look up the status of a customer's order. Requires the order id AND
-    the email on the account, so the tool itself enforces you can't fetch
+    """Look up the status of a customer's order. Requires both the order id
+    and the email on the account, so the tool itself enforces you can't fetch
     someone else's order by guessing an id."""
-    with psycopg.connect(DB_DSN) as conn:
+    with psycopg.connect(READ_ONLY_DB_DSN) as conn:
         row = conn.execute(
             "SELECT status, eta FROM orders WHERE order_id = %s AND customer_email = %s",
             (order_id, customer_email),
         ).fetchone()
     return f"status={row[0]}, eta={row[1]}" if row else "no matching order found"
-
-tools = [get_order_status]
-llm_with_tools = llm.bind_tools(tools)
-tool_node = ToolNode(tools)
-
-graph.add_node("generate_response", generate_response)  # calls llm_with_tools
-graph.add_node("tools", tool_node)
-graph.add_conditional_edges("generate_response", tools_condition)
-graph.add_edge("tools", "generate_response")  # loop back so the model can use the result
 ```
 
-Non-negotiable rules for a database tool in a support agent, since this is the part most likely to go wrong in a "production-grade" system:
+**Writes with real-world consequences** (refunds, cancellations) — never let the orchestrator or the DB specialist execute these directly. The tool creates a *pending* record; a human approves it separately:
 
-- **Never let the LLM write raw SQL against a writable connection.** Give it a small set of specific, parameterized functions (`get_order_status`, `get_account_plan`, `list_open_tickets`) instead of a generic "run this SQL" tool. A generic SQL tool is a direct path to prompt-injection-driven data exfiltration or destructive queries.
-- **Use a read-only DB role** for the connection the agent uses (`GRANT SELECT` only, on specific tables/views — not the app's main writable user).
-- **Scope every query to the authenticated customer** (e.g., require their email/account id as a parameter, as above) so one customer's session can't be tricked into pulling another customer's data.
-- **Pool connections** (`psycopg_pool` or similar) rather than opening a new connection per call — matters once you have concurrent conversations across channels.
+```python
+@tool
+def create_refund_request(order_id: str, customer_email: str, reason: str) -> str:
+    """Create a pending refund request for human review. Does NOT issue a
+    refund — a human must approve it before any money moves."""
+    with psycopg.connect(WRITE_LIMITED_DB_DSN) as conn:
+        conn.execute(
+            "INSERT INTO pending_refunds (order_id, customer_email, reason, status) "
+            "VALUES (%s, %s, %s, 'pending_review')",
+            (order_id, customer_email, reason),
+        )
+    return "Refund request created and is pending human approval."
+```
 
-## 8. WhatsApp channel (Meta Cloud API)
+Non-negotiable rules, unchanged from before and just as true inside a specialist as they were in a flat tool list:
+
+- **Never let the LLM write raw SQL against a writable connection.** Small, specific, parameterized functions only.
+- **Use a read-only DB role** for `get_order_status` and similar lookups (`GRANT SELECT` only).
+- **Use a separately, narrowly scoped role** for `create_refund_request` — it can insert into `pending_refunds`, nothing else; it has no ability to touch the `orders` or `payments` tables directly, and no tool in this codebase should ever be able to actually move money autonomously.
+- **Scope every query to the authenticated customer** (require their own email/account id as a parameter).
+- **Pool connections** rather than opening a new one per call.
+
+Wrap both tools in the `db_specialist` agent the same way as the RAG specialist:
+
+```python
+db_llm = llm.bind_tools([get_order_status, create_refund_request])
+# ... identical StateGraph shape ...
+db_agent = db_graph.compile()
+
+@tool
+def db_specialist(request: str) -> str:
+    """Ask the database specialist to look up an order/account, or to create
+    a pending refund request. Requires the customer's order id and email."""
+    result = db_agent.invoke({"messages": [HumanMessage(request)]})
+    return result["messages"][-1].content
+```
+
+This is exactly the mechanism that makes the refund scenario from earlier work: a customer asking for a refund needs the orchestrator to call `db_specialist` (check the order) *and* `rag_specialist` (check the refund policy) before it has enough information to decide whether to call `create_refund_request` or `escalate_to_human` — and it can do that because both are just tools it's free to call in whatever order the situation calls for.
+
+## 8. Escalation as a tool
+
+Instead of a fixed `route_after_generate` conditional edge checking a `confidence` field in shared state, escalation is now something the orchestrator decides to do, the same way it decides to call any specialist:
+
+```python
+@tool
+def escalate_to_human(summary: str, reason: str) -> str:
+    """Hand this conversation off to a human agent. Use this when: a specialist
+    reports it doesn't have enough information to answer confidently, the
+    customer explicitly asks for a person, or the request involves something
+    sensitive (security concerns, safety issues, anything the specialists'
+    tools can't resolve)."""
+    create_ticket(summary=summary, reason=reason)  # your ticketing/notification logic
+    return "This has been escalated to a human agent who will follow up."
+```
+
+The orchestrator's system prompt is where this actually gets enforced — spell out the triggers explicitly ("if `rag_specialist` indicates the knowledge base doesn't cover something, call `escalate_to_human` rather than answering from your own knowledge"; "if the customer asks for a human, don't argue, escalate"). This is enforcement-by-instruction rather than enforcement-by-graph-structure, which is inherently a bit weaker than the old fixed-edge approach — worth specifically testing for in your eval set: does the orchestrator actually escalate on your out-of-scope test questions, or does it sometimes try to answer anyway.
+
+The RAG specialist's confidence signal (retrieval distance from `similarity_search_with_score` — see the earlier discussion on why lower distance means a better match) is still useful here: build it into `search_knowledge_base`'s return value (e.g., note explicitly in the returned text if the best match was a poor one) so the RAG specialist's own response can honestly say "I don't have good information on this" back to the orchestrator, which is what should trigger the escalation instruction above.
+
+## 9. Reflection pattern: making a specialist self-check
+
+Because each specialist is its own subgraph, you can add a critique/revise loop to just one of them without touching the orchestrator or the others. The RAG specialist is the best candidate — it's where hallucination risk is highest, since it's the one specialist explicitly meant to only say things that are actually in your docs.
+
+Shape: after the RAG specialist's agent node produces a draft answer, add a `critique` node that checks the draft against what `search_knowledge_base` actually returned, and either accepts it or asks for a revision:
+
+```python
+class RagState(MessagesState):
+    context: str
+    draft: str
+    revision_count: int
+
+def critique_node(state: RagState):
+    check = critique_llm.invoke([
+        ("system", "Does this draft answer ONLY use information present in the "
+                    "context below? Reply APPROVED, or explain what's unsupported.\n\n"
+                    f"Context:\n{state['context']}"),
+        ("human", state["draft"]),
+    ])
+    if "APPROVED" in check.content or state["revision_count"] >= 2:  # cap retries
+        return {"messages": [AIMessage(state["draft"])]}
+    return {"messages": [HumanMessage(f"Revise — {check.content}")], "revision_count": state["revision_count"] + 1}
+```
+
+Wire it in after the RAG specialist's agent node, looping back to `agent` if a revision is requested, ending once approved. This is a direct, more capable version of the "groundedness check" confidence signal discussed earlier — instead of just flagging low confidence, it gives the specialist a chance to fix the problem before ever returning to the orchestrator. Cap the retry count (as above) so a stubborn draft can't loop forever — fall through to returning the draft as-is (or triggering escalation) after a couple of attempts.
+
+Don't build this before the plain orchestrator + specialists skeleton is working end to end — it's an enhancement to one specialist's internals, and it's much easier to tell whether it's helping once you already trust the rest of the pipeline.
+
+## 10. WhatsApp channel (Meta Cloud API)
 
 Meta's WhatsApp Cloud API is the official, directly-from-Meta option (no Twilio markup), with a free tier for a monthly volume of conversations. Two moving parts:
 
@@ -249,14 +331,12 @@ def verify(hub_mode: str = None, hub_challenge: str = None, hub_verify_token: st
 @app_api.post("/webhook")
 async def incoming(request: Request):
     payload = await request.json()
-    # payload["entry"][0]["changes"][0]["value"]["messages"][0] has the message
     msg = payload["entry"][0]["changes"][0]["value"]["messages"][0]
     from_number = msg["from"]
     text = msg["text"]["body"]
 
-    state["messages"].append({"role": "user", "content": text})
-    result = app.invoke(state, config={"configurable": {"thread_id": from_number}})
-    send_whatsapp_message(from_number, result["messages"][-1]["content"])
+    result = app.invoke({"messages": [HumanMessage(text)]}, config={"configurable": {"thread_id": from_number}})
+    send_whatsapp_message(from_number, result["messages"][-1].content)
     return {"status": "ok"}
 
 # Sending
@@ -270,35 +350,37 @@ def send_whatsapp_message(to: str, body: str):
     )
 ```
 
-Notes specific to this channel: use the customer's phone number as the LangGraph `thread_id` (same pattern as the email thread id / voice call id — one consistent conversation identity per channel), verify the `X-Hub-Signature-256` header on incoming webhooks so you're not processing spoofed requests, and remember Meta requires pre-approved message *templates* if you want to message a customer first (outside a 24-hour window since their last message) — free-form replies are fine within that window.
+Notes specific to this channel: use the customer's phone number as the LangGraph `thread_id` (same pattern as the email thread id / voice call id), verify the `X-Hub-Signature-256` header on incoming webhooks, and remember Meta requires pre-approved message *templates* if you want to message a customer first (outside a 24-hour window since their last message) — free-form replies are fine within that window.
 
-## 9. Suggested build order
+## 11. Suggested build order
 
-Building all channels at once makes debugging hard, since you can't tell if a bad answer is a RAG problem, a tool-calling problem, or a channel-adapter problem. A more learnable order:
+Building all of this at once makes debugging hard, since you can't tell if a bad answer is a specialist problem, an orchestrator routing problem, or a channel-adapter problem. A more learnable order:
 
-1. **Text + RAG only.** Get `classify_intent → retrieve_context → generate_response` working against a small set of real docs, tested via plain function calls or a CLI loop. This is where most of the "agent building" learning happens.
-2. **Add the escalation branch and a checkpointer**, so multi-turn conversations and human handoff work.
-3. **Add the database tool** (`get_order_status` etc.) with the tool-calling loop, still testing via CLI. Now the agent can answer both "what's your refund policy" (RAG) and "where's my order" (tool) correctly, and — importantly — knows which one to use for a given question.
-4. **Add the email channel** (Gmail MCP, draft-only), since it reuses the same core graph and just adds an adapter.
-5. **Add WhatsApp**, same idea — a webhook adapter in front of the same graph.
-6. **Add voice** (Wispr Flow in, ElevenLabs out) last — it's the most "plumbing," least "agent logic," so save it for once the reasoning core is solid.
-7. **Evaluate**: build a small set of test questions with known-good answers from your docs and DB, and check the agent's answers against them each time you change the prompt, chunking, or tool schema — this is what separates a demo from something you'd trust with real customers.
+1. **RAG specialist alone.** Get `search_knowledge_base` and the RAG specialist's own agent loop working against your test docs, tested by invoking `rag_agent` directly — no orchestrator yet. This is where most of the core "agent building" learning happens.
+2. **Orchestrator + RAG specialist only.** Wrap the RAG specialist as a tool, build the orchestrator loop around it, and confirm routing works for simple single-domain questions plus a checkpointer for multi-turn memory.
+3. **Add the DB specialist** (`get_order_status`, `create_refund_request`) and test the compound case explicitly: a refund request that needs both `db_specialist` and `rag_specialist` called in the right order.
+4. **Add `escalate_to_human`** and test it fires correctly: out-of-scope questions, explicit "let me talk to a person" requests, and low-confidence RAG results.
+5. **Add the Gmail specialist** (draft-only) — reuses the same orchestrator, just a new specialist and a new channel adapter.
+6. **Add WhatsApp**, same idea — a webhook adapter in front of the same orchestrator.
+7. **Add voice** (Wispr Flow in, ElevenLabs out) — the most "plumbing," least "agent logic," so save it for once the reasoning core is solid.
+8. **Add the reflection loop to the RAG specialist** (§9) — an enhancement to one already-working piece, not a prerequisite for anything else.
+9. **Evaluate continuously**: test questions with known-good answers, run through both the RAG specialist alone and the full orchestrator, checking not just final answers but *which specialists got called* — this is what separates a demo from something you'd trust with real customers.
 
-## 10. Making this production-grade
+## 12. Making this production-grade
 
 Things a demo skips that a system handling real customers can't:
 
-- **Persistent checkpointer.** `MemorySaver` lives in process memory and is gone on restart. Swap in `PostgresSaver` (LangGraph ships a Postgres checkpointer) so conversations survive deploys and you can run more than one server process.
-- **Structured logging + tracing.** You want to see, per conversation: which intent was classified, which RAG chunks were retrieved, which tool calls were made with what arguments, and the final response — both for debugging and for auditing what the agent told a customer. LangSmith (from the LangChain team) gives you this with minimal setup; a plain structured logger (JSON logs with a `thread_id` on every line) works too if you'd rather not add a dependency.
-- **Timeouts and retries** on every external call (LLM, embeddings, DB, ElevenLabs, WhatsApp/Gmail APIs) — any one of these being slow or down shouldn't hang or crash the whole conversation. Wrap calls with a retry-with-backoff (`tenacity` is the common choice) and a sane timeout.
-- **Rate limiting per customer/thread**, so one customer (or an abusive/looping agent) can't burn your LLM and API budget.
-- **Secrets management.** API keys (OpenAI/Anthropic, ElevenLabs, Wispr Flow, WhatsApp access token, DB credentials) belong in environment variables or a secrets manager, never committed to the repo.
-- **Webhook signature verification** for both Gmail push notifications (if you move beyond polling) and WhatsApp (`X-Hub-Signature-256`) — otherwise anyone who finds your webhook URL can inject fake messages.
-- **PII handling.** Customer emails, phone numbers, and order data flow through logs, LLM prompts, and possibly third-party APIs (OpenAI, ElevenLabs). Know what you're sending to each provider and redact what you don't need to send (e.g., don't put full card numbers in a prompt, ever).
-- **Deployment shape**: a small FastAPI app exposing the WhatsApp and Gmail webhook endpoints (and a chat endpoint), running the compiled LangGraph `app` per request, containerized (Docker), behind HTTPS. Outbound sends (WhatsApp/email) are good candidates for a background task queue rather than inline in the webhook handler, so a slow LLM call doesn't cause Meta/Google to retry the webhook and double-process a message. See §11 for the full CI/CD → Docker → Kubernetes → ArgoCD path.
-- **Idempotency.** Webhooks retry on timeout — dedupe on the provider's message id so a slow response doesn't cause the agent to process (and reply to) the same customer message twice.
+- **Persistent checkpointer on the orchestrator.** `MemorySaver` lives in process memory and is gone on restart. Swap in `PostgresSaver` so conversations survive deploys and you can run more than one server process. Specialists don't need their own checkpointer — they're invoked fresh per call.
+- **Structured logging + tracing**, now across two levels: which specialists the orchestrator called and in what order, plus each specialist's own internal tool calls (RAG's retrieved chunks/distances, DB's queries). Tag every log line with `thread_id`. LangSmith gives you this with minimal setup; a structured JSON logger works too.
+- **Timeouts and retries** on every external call (LLM, embeddings, DB, ElevenLabs, WhatsApp/Gmail APIs) — remember a single orchestrator turn may now involve several chained LLM calls across specialists, so a slow/failing call anywhere in that chain needs to fail gracefully, not hang the whole conversation.
+- **Rate limiting per customer/thread.**
+- **Secrets management** — API keys and DB credentials in environment variables or a secrets manager, never committed.
+- **Webhook signature verification** for Gmail push notifications and WhatsApp (`X-Hub-Signature-256`).
+- **PII handling** — know what's flowing through logs and to third-party APIs (OpenAI/Anthropic, ElevenLabs) and redact what you don't need to send.
+- **Deployment shape**: a small FastAPI app exposing the WhatsApp and Gmail webhook endpoints (and a chat endpoint), running the compiled orchestrator `app` per request, containerized (Docker), behind HTTPS. Outbound sends are good candidates for a background task queue. See §13 for the full CI/CD → Docker → Kubernetes → ArgoCD path.
+- **Idempotency** — dedupe on the provider's message id so retried webhooks don't double-process.
 
-## 11. Deployment infrastructure: Docker, CI/CD, Kubernetes, ArgoCD
+## 13. Deployment infrastructure: Docker, CI/CD, Kubernetes, ArgoCD
 
 This is the path from "runs on my laptop" to "runs in production, deploys safely, and rolls back if something breaks." Layers, in order:
 
@@ -318,12 +400,11 @@ COPY . .
 ENV PATH=/root/.local/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
-# healthcheck hits a lightweight endpoint, not a full graph invoke
 HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://localhost:8000/health || exit 1
 CMD ["uvicorn", "src.main:app_api", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-**CI (GitHub Actions)** — on every push: lint, run tests (including the eval set from Sprint 9), build the image, push to a registry. CI should **not** deploy directly — that's ArgoCD's job (see below), triggered by CI updating a manifest, not by CI calling `kubectl`.
+**CI (GitHub Actions)** — on every push: lint, run tests (including the eval set from §11), build the image, push to a registry. CI should **not** deploy directly — that's ArgoCD's job, triggered by CI updating a manifest, not by CI calling `kubectl`.
 
 ```yaml
 # .github/workflows/ci.yml
@@ -342,7 +423,7 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
       - run: pytest tests/
-      - run: python scripts/run_eval.py  # the eval set from Sprint 9
+      - run: python scripts/run_eval.py
 
   build-and-push:
     needs: test
@@ -359,8 +440,6 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      # updates the image tag in your separate GitOps config repo,
-      # which is the signal ArgoCD watches for — see below
       - uses: actions/checkout@v4
         with:
           repository: <you>/support-agent-config
@@ -389,7 +468,7 @@ spec:
           image: ghcr.io/<you>/support-agent:latest
           ports: [{ containerPort: 8000 }]
           envFrom:
-            - secretRef: { name: support-agent-secrets }   # API keys, DB DSN
+            - secretRef: { name: support-agent-secrets }
           readinessProbe:
             httpGet: { path: /health, port: 8000 }
             initialDelaySeconds: 5
@@ -419,9 +498,9 @@ spec:
       resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
 ```
 
-Two things worth understanding, not just copying: `readinessProbe` controls whether a pod receives traffic (fails during startup, e.g. while the vector store connection warms up), while `livenessProbe` controls whether Kubernetes restarts the pod (fails only if the process is truly stuck) — conflating the two causes either slow rollouts or unnecessary restarts. Secrets (`support-agent-secrets`) hold your LLM/ElevenLabs/Wispr Flow/WhatsApp/DB credentials as a Kubernetes `Secret` — never baked into the image or the plain manifest.
+`readinessProbe` controls whether a pod receives traffic (fails during startup); `livenessProbe` controls whether Kubernetes restarts the pod (fails only if the process is truly stuck) — conflating the two causes slow rollouts or unnecessary restarts. Secrets (`support-agent-secrets`) hold your LLM/ElevenLabs/Wispr Flow/WhatsApp/DB credentials as a Kubernetes `Secret` — never baked into the image or the plain manifest.
 
-**ArgoCD (GitOps)** — instead of CI running `kubectl apply`, CI commits the new image tag to a Git repo (the `bump-manifest` job above), and ArgoCD continuously watches that repo and reconciles the cluster to match it. This means the cluster state is always exactly what's in Git (auditable, revertible with `git revert`), and a human/CI never needs cluster credentials directly.
+**ArgoCD (GitOps)** — instead of CI running `kubectl apply`, CI commits the new image tag to a Git repo (the `bump-manifest` job above), and ArgoCD continuously watches that repo and reconciles the cluster to match it.
 
 ```yaml
 # argocd/application.yaml — apply this once to your cluster's ArgoCD
@@ -441,28 +520,31 @@ spec:
     namespace: support-agent
   syncPolicy:
     automated:
-      prune: true      # remove resources deleted from Git
-      selfHeal: true    # revert manual kubectl edits back to match Git
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
 ```
 
-Why a **separate config repo** (`support-agent-config`) from the app code repo: it keeps "what changed in the app" and "what's deployed right now" as independent, separately-audited histories, and lets ArgoCD watch a small, purely-declarative repo instead of your whole codebase.
+Why a **separate config repo** from the app code repo: it keeps "what changed in the app" and "what's deployed right now" as independent, separately-audited histories.
 
-Suggested order to actually build this (don't do it all at once): Docker locally first (`docker build`, `docker run`, confirm it works) → CI running tests and building/pushing an image → a single Kubernetes `Deployment`/`Service` applied manually with `kubectl apply` to confirm the manifests are correct → only then introduce the separate config repo and ArgoCD to automate what you were doing manually.
+Suggested order to build this (don't do it all at once): Docker locally first → CI running tests and building/pushing an image → a single Kubernetes `Deployment`/`Service` applied manually with `kubectl apply` → only then introduce the separate config repo and ArgoCD to automate what you were doing manually.
 
-## 12. Glossary (for the "training to build agents" goal)
+## 14. Glossary
 
+- **Orchestrator**: the top-level agent that decides which specialist(s) to call, in what order, and composes the final answer.
+- **Specialist**: a self-contained agent (its own small `StateGraph` + tools) wrapped as a `@tool` so the orchestrator can call it like any other tool. Its internals can be customized (different model, reflection loop, more tools) without changing how the orchestrator calls it.
+- **Reflection pattern**: a specialist critiques its own draft output against source material before returning it, revising if unsupported claims are found — used here on the RAG specialist to catch hallucination before it reaches the orchestrator.
 - **State graph**: a way of modeling an agent as nodes + edges over a shared state, instead of one big prompt. Makes branching, loops, and multi-step tool use explicit and debuggable.
 - **Grounding**: making the LLM answer from retrieved context instead of its own memory, to reduce hallucination.
-- **Checkpointer**: LangGraph's persistence layer for resuming a conversation's state across turns/sessions.
-- **Human-in-the-loop / handoff**: a node that stops automation and routes to a person, gated by a confidence score or explicit customer request.
-- **Adapter (channel)**: the thin layer that converts a channel-specific input (audio, email, WhatsApp webhook payload) into the common message format the graph expects, and converts the output back.
-- **Tool calling**: giving the LLM a set of callable functions (with schemas) it can invoke mid-conversation — used here for database lookups, as distinct from RAG (retrieval of static docs).
-- **Idempotency**: designing a handler so processing the same incoming event twice (e.g., a retried webhook) doesn't cause duplicate side effects (like sending two replies).
+- **Checkpointer**: LangGraph's persistence layer for resuming a conversation's state across turns/sessions — lives on the orchestrator, not on individual specialists.
+- **Tool calling**: giving an LLM a set of callable functions (with schemas) it can invoke mid-conversation — the mechanism used for both specialists (RAG, DB, Gmail) and single actions (database lookups, escalation).
+- **Escalation as a tool**: routing to a human isn't a fixed graph edge here — it's a tool (`escalate_to_human`) the orchestrator decides to call, following instructions in its system prompt.
+- **Adapter (channel)**: the thin layer that converts a channel-specific input (audio, email, WhatsApp webhook payload) into the common message format the orchestrator expects, and converts the output back.
+- **Idempotency**: designing a handler so processing the same incoming event twice (e.g., a retried webhook) doesn't cause duplicate side effects.
 - **GitOps**: deploying by committing desired state to Git and having a controller (ArgoCD) reconcile the cluster to match, rather than pushing changes directly with `kubectl`.
-- **Readiness vs. liveness probe**: readiness gates whether a pod *receives traffic*; liveness gates whether Kubernetes *restarts* the pod. Different failure conditions should trigger each.
+- **Readiness vs. liveness probe**: readiness gates whether a pod *receives traffic*; liveness gates whether Kubernetes *restarts* the pod.
 
 ## Next steps
 
-You're writing the code — paste it in or point me at the file as you go and I'll check it against this guide (correctness, security gaps like the SQL-tool rules in §7, missed edge cases like webhook idempotency). Suggested first target per the build order above: `SupportState`, the `classify_intent → retrieve_context → generate_response` graph, and a CLI loop to test it against a few real docs in `knowledge_base/`.
+You're writing the code — paste it in or point me at the file as you go and I'll check it against this guide. Suggested first target per the build order above: the RAG specialist alone (`search_knowledge_base` tool + its own small agent loop), tested by invoking it directly — no orchestrator yet.
