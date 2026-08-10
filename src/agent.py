@@ -1,19 +1,17 @@
-from typing import TypedDict, Annotated,List,Literal
-from operator import add
-from langgraph.graph import StateGraph,START,END
+from typing import TypedDict, Annotated,List
+from langgraph.graph import StateGraph,START,END, MessagesState
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from pydantic import BaseModel, Field
-from langchain.messages import HumanMessage,AIMessage
+from langchain.messages import HumanMessage
 from langchain_core.messages import BaseMessage
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from config import settings
-from logger import log_query
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolNode,tools_condition
+from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
 
-CONFIDENCE_THRESHOLD = 0.5
+checkpointer = MemorySaver()
 llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
 embedding_model = HuggingFaceEmbeddings(
     model_name="BAAI/bge-m3",
@@ -24,95 +22,74 @@ vectorstore = Chroma(
     persist_directory="./chroma_langchain_db",
     embedding_function=embedding_model)
 
+
+
 class SupportAgent(TypedDict):
-    messages: Annotated[List[BaseMessage],add]
+    messages: Annotated[List[BaseMessage],add_messages]
     channel:str
-    intent: Literal["billing","technical","account","other"]
-    context_chunks: List[str]
-    confidence: float
-    needs_human:bool
 
-classify_prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You classify incoming customer support messages for Lumen Home, a smart "
-     "home device company. Assign exactly one category:\n"
-     "- billing: subscriptions, charges, refunds, plan changes\n"
-     "- technical: device setup, connectivity, troubleshooting, hardware faults\n"
-     "- account: login, password, 2FA, account deletion, data privacy\n"
-     "- other: anything that doesn't clearly fit the above (e.g. shipping, returns, general questions)\n"
-     "Respond with the category only."),
-    ("human", "{message}"),
-])
+@tool
+def search_knowledge_base(query: str):
+    """Searches the internal vector store for relevant documentation chunks and returns top matches with a confidence score.
 
+    Args:
+        query (str): The search query or user question to match against the vector database.
 
-response_prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a support agent for Lumen Home (smart home devices and the Lumen+ "
-     "subscription). Answer the customer's question using ONLY the context below.\n\n"
-     "Rules:\n"
-     "- If the answer isn't in the context, say you don't have that information and "
-     "offer to connect them with a human agent. Do not guess or invent policy details, "
-     "prices, timelines, or coverage terms.\n"
-     "- Be concise and direct — a few sentences, not a wall of text.\n"
-     "- Don't mention 'the context' or 'the documents' to the customer; just answer naturally.\n\n"
-     "Context:\n{context}"),
-    ("human", "{question}"),
-])
-
-
-class IntentClassification(BaseModel):
-    intent: Literal["billing","technical","account","other"] = Field(
-        description="Best-fit category for the customer's message."
-    )
-
-def classify_intent(state: SupportAgent):
-    structured_llm = llm.with_structured_output(IntentClassification)
-
-    classification = structured_llm.invoke(classify_prompt.format_messages(message=state["messages"][-1].content))
-    return {"intent":classification.intent}
-
-def retrieve_context(state: SupportAgent):
-    message = state["messages"][-1].content
-    result =  vectorstore.similarity_search_with_score(filter={"category":state["intent"]},query=message,k=4)
+    Returns:
+        dict: A dictionary containing:
+            - 'context_chunks' (list[tuple[str, float]]): Up to 4 retrieved document snippets with their vector distance scores.
+            - 'confidence' (float): A calculated confidence metric (0.0 to 1.0) derived from the top result's distance score.
+    """
+    result =  vectorstore.similarity_search_with_score(query=query,k=4)
     best_distance = result[0][1]
     confidence = 1 - (best_distance/2)
     return {"context_chunks": [(doc.page_content,score) for doc,score in result],"confidence":confidence}
 
+rag_llm = llm.bind_tools([search_knowledge_base])
 
-def generate_response(state: SupportAgent):
-    chain = response_prompt | llm | StrOutputParser()
-    response = chain.invoke({"context":"\n\n".join([c[0] for c in state["context_chunks"]]),"question":state["messages"][-1].content})
-    log_query(
-        question=state["messages"][-1].content,
-        intent=state["intent"],
-        chunks=state["context_chunks"],
-    )
-    return {"messages":[AIMessage(response)]}
+def rag_agent_node(state: MessagesState):
+    return {"messages":[rag_llm.invoke(state["messages"])]}
 
 
-def route_after_retrieve(state: SupportAgent):
-    return "human_handoff" if state["confidence"]< CONFIDENCE_THRESHOLD else "generate_response"
+rag_graph = StateGraph(MessagesState)
+rag_graph.add_node("agent",rag_agent_node)
+rag_graph.add_node("tools",ToolNode([search_knowledge_base]))
+rag_graph.add_edge(START,"agent")
+rag_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
+rag_graph.add_edge("tools","agent")
 
-    
-graph = StateGraph(SupportAgent)
-graph.add_node("classify_intent",classify_intent)
-graph.add_node("retrieve_context",retrieve_context)
-graph.add_node("generate_response",generate_response)
-graph.add_edge(START,"classify_intent")
-graph.add_edge("classify_intent","retrieve_context")
-graph.add_conditional_edges("retrieve_context",route_after_retrieve,{"human_handoff":"human_handoff","generate_response":"generate_response"})
-graph.add_edge("generate_response",END)
+rag_agent = rag_graph.compile()
 
-agent = graph.compile()
+@tool
+def rag_specialist(question:str):
+    """Ask the knowledge-base specialist about policies, FAQs, or troubleshooting
+    steps. Always use this for anything involving a policy, price, timeline, or
+    procedure — never answer those from memory."""
+    result = rag_agent.invoke({"messages":question})
+    return result["messages"][-1].text
 
+specialists = [rag_specialist]
+orchestrator_llm = llm.bind_tools(specialists)
+
+def orchestrator_node(state: SupportAgent):
+    return {"messages":[orchestrator_llm.invoke(state["messages"][-1])]}
+
+orchestrator_graph = StateGraph(SupportAgent)
+orchestrator_graph.add_node("agent",orchestrator_node)
+orchestrator_graph.add_node("tools",ToolNode(specialists))
+orchestrator_graph.add_edge(START,"agent")
+orchestrator_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
+orchestrator_graph.add_edge("tools","agent")
+
+orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
 messages = []
 while True:
     message = input("\nwhat is your question? ")
     if message.lower() in ["exit","q"]:
         break
     messages.append(HumanMessage(message))
-    result = agent.invoke({"messages":messages})
-    reply = result["messages"][-1].content
+    result = orchestrator.invoke({"messages":messages},{"configurable": {"thread_id": "1"}})
+    reply = result["messages"][-1].text
     print(reply)
 
     
