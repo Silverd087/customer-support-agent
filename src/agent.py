@@ -5,7 +5,7 @@ from langchain.messages import HumanMessage
 from langchain_core.messages import BaseMessage
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from config import settings
+from src.config import settings
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode,tools_condition
 from langgraph.graph.message import add_messages
@@ -43,7 +43,7 @@ def search_knowledge_base(query: str):
     result =  vectorstore.similarity_search_with_score(query=query,k=4)
     best_distance = result[0][1]
     confidence = 1 - (best_distance/2)
-    return {"context_chunks": [(doc.page_content,score) for doc,score in result],"confidence":confidence}
+    return {"context_chunks": [doc.page_content for doc,_ in result]}
 
 rag_llm = llm.bind_tools([search_knowledge_base])
 
@@ -65,14 +65,14 @@ def rag_specialist(question:str):
     """Ask the knowledge-base specialist about policies, FAQs, or troubleshooting
     steps. Always use this for anything involving a policy, price, timeline, or
     procedure — never answer those from memory."""
-    result = rag_agent.invoke({"messages":question})
+    result = rag_agent.invoke({"messages":[HumanMessage(question)]})
     return result["messages"][-1].text
 
 specialists = [rag_specialist]
 orchestrator_llm = llm.bind_tools(specialists)
 
 def orchestrator_node(state: SupportAgent):
-    return {"messages":[orchestrator_llm.invoke(state["messages"][-1])]}
+    return {"messages":[orchestrator_llm.invoke(state["messages"])]}
 
 orchestrator_graph = StateGraph(SupportAgent)
 orchestrator_graph.add_node("agent",orchestrator_node)
@@ -83,13 +83,13 @@ orchestrator_graph.add_edge("tools","agent")
 
 orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
 messages = []
-while True:
+"""while True:
     message = input("\nwhat is your question? ")
     if message.lower() in ["exit","q"]:
         break
     messages.append(HumanMessage(message))
-    result = orchestrator.invoke({"messages":messages},{"configurable": {"thread_id": "1"}})
-    reply = result["messages"][-1].text
-    print(reply)
+    result = orchestrator.invoke({"messages":message},{"configurable": {"thread_id": "1"}})
+    reply = result["messages"][-1].content
+    print(reply)"""
 
     

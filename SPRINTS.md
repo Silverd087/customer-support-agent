@@ -206,6 +206,76 @@ Note: Sprint 10b's CI step runs this eval script, so build a minimal version of 
 
 ---
 
+# Phase 2: Beyond a learning project — SaaS + portfolio
+
+See guide §15–§20. Do Sprint 12 first — it's a foundational retrofit, much cheaper now than after building further on single-tenant assumptions.
+
+## Sprint 12 — Multi-tenancy retrofit
+
+- [ ] Update your models per `sql/schema.sql`: `tenants` table, `tenant_id` on every table, `orders` split into a surrogate `id` + tenant-scoped `order_number`
+- [ ] Apply the RLS policies in `sql/roles.sql`; confirm `SET app.current_tenant_id` actually blocks cross-tenant reads even with the application-level filter temporarily removed
+- [ ] Namespace Chroma collections per tenant (`tenant_{tenant_id}_kb`), re-ingest `knowledge_base/` under a tenant-scoped collection
+- [ ] Template the orchestrator's system prompt to pull business name/persona from tenant config instead of the hardcoded "Lumen Home"
+- [ ] Build a `build_orchestrator(tenant_id)` factory + simple cache (guide §15), replacing the module-level singleton orchestrator
+- [ ] Test isolation explicitly using `sql/seed.sql`'s two tenants: confirm tenant 2 can never retrieve tenant 1's order or knowledge-base data, including via a deliberately manipulated prompt trying to reference another tenant
+
+**Done when:** two tenants' data provably never cross — verified at both the application level and by confirming RLS blocks it independently.
+
+---
+
+## Sprint 13 — Real customer authentication
+
+- [ ] Design step-up verification for `create_refund_request`: OTP to the email/phone on file, or order number + last-4-digits match, before the tool executes
+- [ ] Wire channel-level identity signals for reads: WhatsApp phone number matched against the customer's registered phone; web widget requires login and passes a verified `customer_id` directly into the orchestrator invocation, not extracted from conversation text
+- [ ] Test: attempt to fetch another customer's order using a guessed email — confirm it fails
+- [ ] Test: attempt `create_refund_request` without completing step-up verification — confirm it's blocked
+
+**Done when:** nothing with real consequences trusts free-text identity alone.
+
+---
+
+## Sprint 14 — Admin dashboard
+
+- [ ] Doc upload flow that triggers tenant-scoped ingestion
+- [ ] Analytics view: conversation volume, escalation rate, RAG hit rate (from Sprint 10's logging)
+- [ ] `pending_refunds` review/approve/reject UI
+- [ ] Tenant config UI: business name/persona feeding the templated system prompt
+
+**Done when:** a business owner can onboard their own docs and act on a pending refund without touching the database directly.
+
+---
+
+## Sprint 15 — Human-agent handoff UI
+
+- [ ] Live view of escalated conversations with full context
+- [ ] A "paused for human" flag per `thread_id` that the orchestrator checks before responding
+- [ ] Human replies appear in the same channel (WhatsApp/Gmail/chat) the customer is using
+
+**Done when:** a human can take over an escalated conversation and the bot stays silent until handed back.
+
+---
+
+## Sprint 16 — Billing
+
+- [ ] Stripe integration; `tenants.plan` tied to a subscription
+- [ ] Webhook updates `tenants.status` on payment success/failure
+- [ ] Usage metering per tenant (conversations/messages) if pricing is usage-based
+
+**Done when:** a new tenant can sign up, pay, and reach `active` status automatically, no manual step.
+
+---
+
+## Sprint 17 — Portfolio polish
+
+- [ ] Deploy live and reachable, using Sprint 10b's K8s/ArgoCD setup
+- [ ] Add a web chat widget channel — the easiest for a stranger to try, no WhatsApp Business setup required
+- [ ] Architecture write-up / README overhaul (the orchestrator/specialist/reflection pattern is genuinely differentiated material worth explaining well)
+- [ ] Stub a data retention/deletion policy for tenant data, mirroring `account_and_security.md`'s own 30-day pattern applied to the SaaS itself
+
+**Done when:** a stranger can try the live demo, and you have a written explanation of the architecture to point them to.
+
+---
+
 ## How we'll work through this
 
-Bring me code at the end of each sprint's tasks — or sooner if you get stuck on a specific piece. I'll check it against `customer_support_agent_guide.md` and flag bugs, security gaps (especially in Sprints 5, 7, 10), and infra issues (Sprint 10b). Sprint 2/2b are done — Sprint 3 (RAG specialist) is next.
+Bring me code at the end of each sprint's tasks — or sooner if you get stuck on a specific piece. I'll check it against `customer_support_agent_guide.md` and flag bugs, security gaps (especially in Sprints 5, 7, 10, 12, 13), and infra issues (Sprint 10b). Sprint 2/2b are done — Sprint 3 (RAG specialist) is next; Phase 2 starts once Sprint 11 is done.

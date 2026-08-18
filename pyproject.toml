@@ -14,5 +14,10 @@ dependencies = [
     "langchain-huggingface>=1.2.2",
     "langchain-text-splitters>=1.1.2",
     "langgraph>=1.2.10",
+    "pytest>=9.1.1",
     "sentence-transformers>=5.7.0",
+    "sqlalchemy>=2.0.51",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]

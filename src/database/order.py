@@ -1,0 +1,41 @@
+from base import Base
+from sqlalchemy.orm import mapped_column,Mapped,relationship
+from sqlalchemy import String,DateTime,ForeignKey,Enum,Text,func,Integer
+from datetime import datetime
+import enum
+from typing import Optional
+import uuid
+class Status(enum.Enum):
+    PROCESSING = "processing"
+    SHIPPED =  "shipped"
+    DELIVERED = "delivered"
+    CANCELLED = "cancelled"
+    RETURNED = "returned"
+
+class ShippingMethod(enum.Enum):
+    STANDARD = "standard"
+    EXPEDITED = "expedited"
+    OVERNIGHT = "overnight"
+
+class Order(Base):
+    __tablename__ = "order"
+
+    id:Mapped[str] = mapped_column(String(10),primary_key=True)
+    customer_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("customer.id"),nullable=False)
+    status:Mapped[Status] = mapped_column(Enum(Status),values_callable=lambda e: [x.value for x in e]) 
+    shipping_method:Mapped[ShippingMethod] = mapped_column(Enum(ShippingMethod),values_callable=lambda e: [x.value for x in e])
+    tracking_number:Mapped[str] = mapped_column(String(10))
+    placed_at:Mapped[datetime] = mapped_column(DateTime(timezone=True),server_default=func.now())
+    shipped_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
+    delivered_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
+    eta_date:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
+    total_cents:Mapped[int] = mapped_column(Integer)
+    tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id"),nullable=False)
+
+
+    tenant:Mapped["Tenant"] = relationship("Tenant",back_populates="orders")
+    customer:Mapped["Customer"] = relationship("Customer",back_populates="orders")
+    order_items:Mapped[list["OrderItem"]] = relationship("OrderItem",back_populates="order")
+    payments:Mapped[list["Payment"]] = relationship("Payment",back_populates="order")
+    pending_refund:Mapped["PendingRefund"] = relationship("PendingRefund",back_populates="order")
+

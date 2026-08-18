@@ -545,6 +545,81 @@ Suggested order to build this (don't do it all at once): Docker locally first �
 - **GitOps**: deploying by committing desired state to Git and having a controller (ArgoCD) reconcile the cluster to match, rather than pushing changes directly with `kubectl`.
 - **Readiness vs. liveness probe**: readiness gates whether a pod *receives traffic*; liveness gates whether Kubernetes *restarts* the pod.
 
+---
+
+# Part 2: Beyond a learning project — SaaS + portfolio
+
+Everything above builds a working agent for one business. This part covers what turns it into a real, sellable product *and*, at the same time, the strongest possible portfolio piece — a live multi-tenant product reachable by anyone is a much stronger showcase than a static demo. Do the multi-tenancy retrofit first; it's the one change that touches almost everything already built, so it's far cheaper now than after Sprints 12+ are done single-tenant.
+
+## 15. Multi-tenancy
+
+Every table gets a `tenant_id` (see `sql/schema.sql`), denormalized directly onto each table rather than only reachable through joins — every query filters on it directly, and it's indexed. Two other things need the same treatment:
+
+- **Vector store**: a separate Chroma collection per tenant (`collection_name=f"tenant_{tenant_id}_kb"`), not one shared collection with a metadata filter. Physical separation means a forgotten filter simply can't leak data across tenants — the wrong collection object would have to be connected to entirely, a much coarser and more visible mistake than a missing `WHERE` clause.
+- **The orchestrator's system prompt**: currently hardcodes "Lumen Home" — this becomes a templated value pulled from tenant config (business name, tone, escalation contact) instead of a literal string.
+
+**The rule that matters most**: `tenant_id` must never be something the LLM supplies as a tool argument. If it's part of a tool's parameters, a manipulated conversation could potentially get the model to pass a different tenant's id. Instead, bind it at construction time — build a tenant-scoped orchestrator (and its tools) via a factory function, based on which tenant this conversation belongs to (known from the channel itself: which WhatsApp number received it, which Gmail account, which web widget's API key) — not from anything inside the conversation:
+
+```python
+def build_orchestrator(tenant_id: int):
+    tenant_vectorstore = Chroma(collection_name=f"tenant_{tenant_id}_kb", embedding_function=embedding_model)
+
+    @tool
+    def search_knowledge_base(query: str) -> str:
+        """..."""
+        results = tenant_vectorstore.similarity_search_with_score(query=query, k=4)
+        return "\n\n".join(doc.page_content for doc, _ in results)
+
+    @tool
+    def get_order_status(order_number: str, customer_email: str) -> str:
+        """..."""
+        with psycopg.connect(READ_ONLY_DB_DSN) as conn:
+            conn.execute("SET app.current_tenant_id = %s", (tenant_id,))  # activates RLS, see roles.sql
+            row = conn.execute(
+                "SELECT status, eta_date FROM orders WHERE order_number = %s AND customer_id IN "
+                "(SELECT id FROM customers WHERE email = %s)",
+                (order_number, customer_email),
+            ).fetchone()
+        return f"status={row[0]}, eta={row[1]}" if row else "no matching order found"
+
+    # ... build rag_specialist, db_specialist, orchestrator exactly as before,
+    # using these tenant-bound tools instead of the module-level ones ...
+    return compiled_orchestrator_graph
+
+_orchestrators: dict[int, "CompiledGraph"] = {}
+def get_orchestrator_for_tenant(tenant_id: int):
+    if tenant_id not in _orchestrators:
+        _orchestrators[tenant_id] = build_orchestrator(tenant_id)
+    return _orchestrators[tenant_id]
+```
+
+`sql/roles.sql` adds Postgres Row-Level Security as a second, DB-enforced layer on top of this — even if a query somewhere forgot its `tenant_id` filter, RLS blocks cross-tenant rows at the database itself once `SET app.current_tenant_id` is set on the connection. Treat application-level filtering and RLS as belt-and-suspenders, not either/or.
+
+Every channel adapter now needs a "which tenant is this" resolution step before invoking anything: WhatsApp number → tenant lookup, Gmail account → tenant lookup, web widget → API key → tenant lookup.
+
+## 16. Real customer authentication
+
+Right now `get_order_status`/`create_refund_request` trust whatever email the model was told in conversation — nothing stops someone from typing a guessed email and order number to probe for data. Fix this proportionally to risk:
+
+- **Reads** (order status): a reasonable trust signal already exists per channel — e.g., on WhatsApp, the phone number the message came from can be matched against the customer's registered phone rather than trusting free-text email. On a web widget, require login and pass a verified `customer_id` into the orchestrator's invocation directly, rather than having the LLM extract an email from conversation text.
+- **Writes with consequences** (`create_refund_request`): need explicit step-up verification regardless of channel — an OTP sent to the email/phone on file before the tool executes, or at minimum matching order number + last-4-digits of the original payment method. This is a deliberate extra step, not a UX nicety.
+
+## 17. Admin dashboard (for the business using your product)
+
+The only way `pending_refunds` and `escalate_to_human` tickets become actionable rather than write-only. A tenant needs a place to: upload/manage their knowledge base (triggering ingestion into their tenant-scoped Chroma collection), see analytics (conversation volume, escalation rate, RAG hit rate — pulled from the logging/eval infrastructure in §12/§11), review and approve/reject `pending_refunds`, and configure their bot's persona/business name (feeding the templated system prompt from §15). Doesn't need to be polished at first — a functional internal tool beats a beautiful one that doesn't exist yet.
+
+## 18. Human-agent handoff UI
+
+The other half of `escalate_to_human` (§8) actually being useful: a live view of escalated conversations where a human agent can read full context and take over. Needs a "paused for human" flag per `thread_id` that the orchestrator checks before responding, so the bot doesn't talk over a human who's already engaged.
+
+## 19. Billing
+
+Tie `tenants.plan` to a Stripe subscription; a webhook updates `tenants.status` on payment success/failure. If pricing is usage-based, meter conversations or messages per tenant per billing period — the same structured logs from §12 (tagged with `tenant_id` once §15 is in) are what you'd aggregate for this.
+
+## 20. Portfolio polish
+
+Once at least one real tenant works end to end: deploy it live and reachable (the K8s/ArgoCD path in §13 gets you most of the way — the remaining step is just leaving it running somewhere, not just describable in a README). Add a web chat widget as a channel alongside WhatsApp/Gmail/voice — it's by far the easiest thing for a stranger to try, no WhatsApp Business setup required. Write up the architecture (this guide's orchestrator/specialist/reflection pattern is genuinely differentiated material — multi-agent design is widely discussed and comparatively rarely actually built and explained clearly). And stub out a data retention/deletion policy for tenant data before calling it a real product — real customer PII is now flowing through something other businesses sign up for, not just a personal test project; mirror the 30-day deletion pattern your own `account_and_security.md` already describes, applied to the SaaS itself.
+
 ## Next steps
 
-You're writing the code — paste it in or point me at the file as you go and I'll check it against this guide. Suggested first target per the build order above: the RAG specialist alone (`search_knowledge_base` tool + its own small agent loop), tested by invoking it directly — no orchestrator yet.
+You're writing the code — paste it in or point me at the file as you go and I'll check it against this guide. Suggested first target per the build order above: the RAG specialist alone (`search_knowledge_base` tool + its own small agent loop), tested by invoking it directly — no orchestrator yet. For Part 2, the immediate next step is the multi-tenancy retrofit (§15) using the schema in `sql/schema.sql`, before building further on a single-tenant assumption.
