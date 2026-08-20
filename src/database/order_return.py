@@ -1,4 +1,4 @@
-from base import Base
+from database.base import Base
 from sqlalchemy.orm import mapped_column,Mapped,relationship
 import uuid
 from sqlalchemy import UUID,ForeignKey,DateTime,Text,func,Enum
@@ -13,15 +13,15 @@ class Status(enum.Enum):
     REFUNDED = 'refunded'
 
 class OrderReturn(Base):
-    __tablename__ = "order_return"
+    __tablename__ = "order_returns"
 
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
-    order_item_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("order_item.id"))
+    order_item_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("order_items.id"))
     reason:Mapped[str] = mapped_column(Text)
-    status:Mapped[Status] = mapped_column(Enum(Status),values_callable=lambda e: [x.value for x in e])
+    status:Mapped[Status] = mapped_column(Enum(Status,name="order_return_status",values_callable=lambda e: [x.value for x in e]))
     requested_at:Mapped[datetime] = mapped_column(DateTime(timezone=True),default=func.now())
     refunded_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
-    tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id"),nullable=False)
+    tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)
 
 
     tenant:Mapped["Tenant"] = relationship("Tenant",back_populates="order_returns")

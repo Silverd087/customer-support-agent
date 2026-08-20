@@ -1,10 +1,9 @@
-from base import Base
+from database.base import Base
 from sqlalchemy.orm import mapped_column,Mapped,relationship
 import uuid
 from sqlalchemy import UUID,DateTime,Text,Enum,func
 from datetime import datetime
 import enum
-
 
 class Plan(enum.Enum):
     TRIAL = "trial"
@@ -18,12 +17,12 @@ class Status(enum.Enum):
     SUSPENDED = "suspended"
 
 class Tenant(Base):
-    __tablename__ = "tenant"
+    __tablename__ = "tenants"
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     name:Mapped[str] = mapped_column(Text,nullable=False)
     slug:Mapped[str] = mapped_column(Text,nullable=False)
-    plan:Mapped[Plan] = mapped_column(Enum(Plan),values_callable=lambda e: [x.value for x in e])
-    status:Mapped[Status] = mapped_column(Enum(Status),values_callable=lambda e: [x.value for x in e])
+    plan:Mapped[Plan] = mapped_column(Enum(Plan,name="tenant_plan",values_callable=lambda e: [x.value for x in e]))
+    status:Mapped[Status] = mapped_column(Enum(Status,name="tenant_status",values_callable=lambda e: [x.value for x in e]))
     created_at:Mapped[datetime] = mapped_column(DateTime(timezone=True),default=func.now())
 
     customers:Mapped[list["Customer"]] = relationship("Customer",back_populates="tenant")
@@ -35,4 +34,5 @@ class Tenant(Base):
     products:Mapped[list["Product"]] = relationship("Product",back_populates="tenant")
     warranty_claims:Mapped[list["WarrantyClaim"]] = relationship("WarrantyClaim",back_populates="tenant")
     subscriptions:Mapped[list["Subscription"]] = relationship("Subscription",back_populates="tenant")
+    escalations:Mapped[list["Escalation"]] = relationship("Escalation",back_populates="tenant")
 

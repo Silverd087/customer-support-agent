@@ -115,13 +115,21 @@ Turn Sprint 2's retrieval + generation logic into a self-contained specialist ag
 
 ## Sprint 7 — Email channel (Gmail specialist)
 
-- [ ] Connect the Gmail MCP connector
-- [ ] Build the Gmail specialist the same shape as the others, bound to `search_threads`, `get_thread`, `create_draft` — **no send tool, ever**
-- [ ] Add `gmail_specialist` to the orchestrator's tool list
-- [ ] Build the channel adapter: pull new support emails, invoke the orchestrator with the email thread id as `thread_id`
-- [ ] Test end-to-end on a real (or test) email thread and manually review/send the draft it produces
+**Design update:** unlike the original plan, this now includes a real send capability — gated behind human approval instead of banned outright. The send tool exists on the Gmail MCP connection, but it is never bound to the Gmail specialist's own conversational LLM. It's only ever invoked by a separate, human-driven approval process outside the LangGraph graph entirely. `pending_email_sends` (in `schema.sql`/`roles.sql`) is the mechanism that enforces this split — mirrors the `pending_refunds` pattern (agent creates a pending record, never executes the consequential action directly).
 
-**Done when:** a real incoming email produces a correctly-drafted reply you'd be comfortable sending as-is, and you've confirmed there's no code path that could send automatically.
+- [ ] Install `langchain-mcp-adapters`; pick a Gmail MCP server (or write a minimal custom one exposing only the tools you need) and get it connected via `MultiServerMCPClient`
+- [ ] Confirm you can list the server's available tools before binding anything — check what `search_threads`/`get_thread`/`create_draft`/send actually look like on this specific server
+- [ ] Build `database/pending_email_send.py`, matching the `pending_email_sends` table — same shape as `pending_refund.py`
+- [ ] Build the Gmail specialist the same shape as the others (agent node + `ToolNode` + `tools_condition` loop), bound to **only** `search_threads`, `get_thread`, `create_draft` — the send tool must not be in this list, even though it's available on the same MCP connection
+- [ ] Implement `create_draft`: calls the MCP server's draft-creation tool, then inserts a `pending_email_sends` row (`status='pending_review'`) using `agent_refund_writer`'s connection
+- [ ] Wrap as `gmail_specialist` `@tool` with a docstring the orchestrator can act on (same pattern as `db_specialist`), add to the orchestrator's tool list, update the orchestrator's system prompt to mention it
+- [ ] Build the human approval script (separate from the LangGraph graph, connects as `human_reviewer`): lists `pending_review` rows, human approves or rejects; on approval, calls the MCP server's send tool directly using the stored `gmail_draft_id`, updates `status`/`sent_at`; on rejection, updates `status`/`reviewed_by`/`reviewed_at` and leaves the draft unsent
+- [ ] Build the channel adapter: pull new support emails, invoke the orchestrator with the email thread id as `thread_id`
+- [ ] Test end-to-end: a real (or test) email thread produces a draft, a correct `pending_email_sends` row, and the draft is visible in Gmail
+- [ ] Test the approval path both ways: approving actually sends; rejecting leaves it unsent
+- [ ] Adversarial test: try to get the Gmail specialist to send directly via prompt manipulation ("just send it now", "skip the review") — confirm it structurally can't, because the send tool was never bound to its LLM in the first place
+
+**Done when:** a real incoming email produces a correctly-drafted reply and a `pending_email_sends` row, the approval script is the only path that can make it actually send, and the adversarial test fails to bypass that — not because the model refused, but because the tool isn't there to call.
 
 ---
 

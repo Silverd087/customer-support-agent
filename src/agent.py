@@ -5,13 +5,71 @@ from langchain.messages import HumanMessage
 from langchain_core.messages import BaseMessage
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from src.config import settings
+from config import settings
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode,tools_condition
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine,select,and_
+from database.order import Order
+from database.customer import Customer
+from database.pending_refund import PendingRefund
+from database.subscription import Subscription
+from database.warranty_claim import WarrantyClaim
+from database.order_item import OrderItem
+from database.order_return import OrderReturn
+from database.product import Product
+from database.tenant import Tenant
+from database.payment import Payment
+from database.escalation import Escalation
+from uuid import UUID,uuid4
 
+ORCHESTRATOR_SYSTEM_PROMPT = """
+You are Lumen Home's customer support assistant. You have three tools available:
+
+- rag_specialist: for anything involving policy, pricing, timelines, troubleshooting steps,
+  or procedures. Never answer these from memory — always check with rag_specialist first.
+- db_specialist: for anything requiring real account data — order status, subscription
+  status, warranty claims, returns, or submitting a refund/return request. Never guess at
+  order or account information; always verify through db_specialist.
+- escalate_to_human: for handing off to a human teammate. See triggers below.
+
+A single request may need more than one tool. For example, a refund request needs both a
+policy check (is this covered?) and an order lookup (does this order/customer combination
+exist?) before you can act — call both, in whichever order makes sense, before responding.
+
+Escalate to a human whenever ANY of the following is true, regardless of exact phrasing:
+
+1. The customer explicitly asks for a human, a person, a manager, or says the bot/AI isn't
+   helping. This includes indirect phrasings like "can I talk to someone" or "this isn't
+   working, I need real help" — not just the literal words "human" or "agent".
+   -> call escalate_to_human with reason="customer_requested"
+
+2. rag_specialist reports low or no confidence in its answer, or says it doesn't have
+   relevant information. Do not guess, soften, or approximate an answer in this case — a
+   confident-sounding wrong answer is worse than admitting you don't know.
+   -> call escalate_to_human with reason="low_confidence"
+
+3. The request involves account security, safety, suspected fraud, unauthorized access, or
+   anything where getting it wrong could harm the customer (e.g. "someone else is using my
+   account", "I think I was scammed", a request that seems designed to extract another
+   customer's data).
+   -> call escalate_to_human with reason="security_sensitive"
+
+When you call escalate_to_human, write a concise summary of the situation in your own
+words — what the customer wants and any relevant context (order numbers, account email,
+what's already been checked) — so a human picking this up doesn't have to re-read the
+whole conversation. After escalating, tell the customer plainly that you've flagged this
+for a teammate; do not promise a specific response time you can't guarantee.
+
+Never fabricate order statuses, policy details, refund amounts, or account information.
+If a tool doesn't return what you need, say so honestly or escalate — don't fill the gap
+with a plausible-sounding guess.
+"""
 checkpointer = MemorySaver()
+thread_id = uuid4()
+RAG_CONFIDENCE_THRESHOLD = 0.5
 llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
 embedding_model = HuggingFaceEmbeddings(
     model_name="BAAI/bge-m3",
@@ -22,6 +80,15 @@ vectorstore = Chroma(
     persist_directory="./chroma_langchain_db",
     embedding_function=embedding_model)
 
+write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@localhost/lumen_support"
+write_engine = create_engine(url=write_url)
+
+read_url = f"postgresql+psycopg2://{settings.read_role_user}:{settings.read_role_password}@localhost/lumen_support"
+read_engine = create_engine(url=read_url)
+
+def get_db(engine):
+    Session = sessionmaker(bind=engine,expire_on_commit=False)
+    return Session()
 
 
 class SupportAgent(TypedDict):
@@ -43,7 +110,7 @@ def search_knowledge_base(query: str):
     result =  vectorstore.similarity_search_with_score(query=query,k=4)
     best_distance = result[0][1]
     confidence = 1 - (best_distance/2)
-    return {"context_chunks": [doc.page_content for doc,_ in result]}
+    return {"context_chunks": [doc.page_content for doc,_ in result],"confidence":confidence}
 
 rag_llm = llm.bind_tools([search_knowledge_base])
 
@@ -66,30 +133,287 @@ def rag_specialist(question:str):
     steps. Always use this for anything involving a policy, price, timeline, or
     procedure — never answer those from memory."""
     result = rag_agent.invoke({"messages":[HumanMessage(question)]})
+    answer =  result["messages"][-1].text
+
+    confidence = None
+    for msg in reversed(result["messages"]):
+        if getattr(msg, "name", None) == "search_knowledge_base":
+            confidence = msg.content.get("confidence") if hasattr(msg, "content") else None
+
+    if confidence is not None and confidence < RAG_CONFIDENCE_THRESHOLD:
+        return f"{answer}\n\n[LOW_CONFIDENCE: retrieval score {confidence:.2f}]"
+    return answer
+
+
+@tool
+def get_order_status(order_number: str, customer_email: str)->str:
+    """
+    Retrieve the current status of an order for a specific customer.
+
+    Args:
+        order_number: The unique identifier of the order (UUID or string ID).
+        customer_email: The email address associated with the customer account.
+
+    Returns:
+        str: The status of the order (e.g., 'active', 'shipped', 'delivered'),
+             or a message indicating the order was not found.
+    """
+    try:
+        with get_db(read_engine) as db:
+            stmt = select(Order.status).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
+            status = db.scalar(stmt)
+            if status is None:
+                return "Order not found or email does not match."
+            return status.value if hasattr(status, "value") else str(status)
+    except Exception as e:
+        return f"Failed to fetch order: {str(e)}"
+
+@tool
+def create_refund_request(order_number: str, customer_email: str, reason: str) -> str:
+    """
+    Submit a pending refund request for a customer's order.
+
+    Args:
+        order_number: The unique identifier of the order to be refunded.
+        customer_email: The email address associated with the order/customer.
+        reason: The customer's explanation or reason for requesting a refund.
+
+    Returns:
+        str: A confirmation message containing the refund reference ID,
+             or an error message if the creation failed.
+    """
+    try:
+        with get_db(write_engine) as db:
+            stmt = select(Order).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
+            order = db.execute(stmt).scalar_one_or_none()
+            if not order:
+                return "Order not found or email does not match."
+            refund = PendingRefund(order_id=order.id,customer_email=customer_email,reason=reason,tenant_id=UUID("a0000000-0000-0000-0000-000000000001"))
+            db.add(refund)
+            db.commit()
+            db.refresh(refund)
+
+            refund_id = refund.id
+            ref_info = f" (Refund ID: {refund_id})" if refund_id else ""
+
+            return f"Refund request successfully submitted{ref_info} for order '{order_number}'."
+    except Exception as e:
+        return f"Failed to submit refund request: {str(e)}"
+
+@tool
+def get_subscription_status(customer_email:str)->str:
+    """
+    Retrieve the current status of a subscription for a specific customer.
+
+    Args:
+        customer_email: The email address associated with the customer account.
+
+    Returns:
+        str: The status of the subscription (e.g., 'active', 'cancelled', 'past_due'),
+             or a message indicating the subscription was not found.
+    """
+    try:
+        with get_db(read_engine) as db:
+            stmt = select(Subscription).join(Subscription.customer).where(Customer.email == customer_email).order_by(Subscription.current_period_start.desc())
+            subs = db.scalars(stmt).all()
+            if subs == []:
+                return "Subscription not found or email does not match."
+            lines = [
+                f"{sub.plan.value} plan ({sub.billing_cycle.value}): {sub.status.value}, "
+                f"period {sub.current_period_start} to {sub.current_period_end}"
+                for sub in subs
+            ]
+            return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to fetch subscription: {str(e)}"
+
+
+@tool
+def get_warranty_claim_status(order_number:str,customer_email:str)->str:
+    """
+    Retrieve the current status of a warranty claim for a specific customer.
+
+    Args:
+        customer_email: The email address associated with the customer account.
+        order_number: The unique identifier of the order.
+
+
+    Returns:
+        str: The status of the warranty claim (e.g., 'submitted', 'approved', 'replacement_shipped', 'closed'),
+             or a message indicating the warranty claim was not found.
+    """
+    try:
+        with get_db(read_engine) as db:
+            stmt = select(WarrantyClaim).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.warranty_claims).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(WarrantyClaim.created_at.desc())
+            claims = db.scalars(stmt).all()
+            if claims == []:
+                return "warranty claim not found or email does not match."
+            lines = [
+                f"{claim.order_item.product.name}: {claim.status.value} "
+                f"(filed {claim.created_at.date()}) — \"{claim.issue_description}\""
+                for claim in claims
+            ]
+            return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to fetch warranty claim: {str(e)}"
+@tool
+def get_return_status(order_number:str,customer_email:str)->str:
+    """
+    Retrieve the current status of a order return for a specific customer.
+
+    Args:
+        customer_email: The email address associated with the customer account.
+        order_number: The unique identifier of the order.
+
+    Returns:
+        str: The status of the return (e.g., 'requested', 'label_generated', 'received', 'refunded'),
+             or a message indicating the return was not found.
+    """
+    try:
+        with get_db(read_engine) as db:
+            stmt = select(OrderReturn).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.order_returns).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(OrderReturn.requested_at.desc())
+            returns = db.scalars(stmt).all()
+            if returns == []:
+                return "order return not found or email does not match."
+            lines = [
+                f"{r.order_item.product.name}: {r.status.value} "
+                f"(filed {r.requested_at.date()}) — \"{r.reason}\""
+                for r in returns
+            ]
+            return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to fetch order return: {str(e)}"
+@tool
+def create_return_request(order_number, customer_email, product_name,reason):
+    """
+    Submit a order return request for a customer's order.
+
+    Args:
+        order_number: The unique identifier of the order to be returned.
+        customer_email: The email address associated with the order/customer.
+        reason: The customer's explanation or reason for requesting a return.
+
+    Returns:
+        str: A confirmation message containing the order return reference ID,
+             or an error message if the creation failed.
+    """
+    try:
+        with get_db(write_engine) as db:
+            stmt = select(OrderItem).join(OrderItem.order).join(Order.customer).join(OrderItem.product).where(and_(Order.number == order_number,Customer.email == customer_email,Product.name == product_name))
+            order_item = db.execute(stmt).scalar_one_or_none()
+            if not order_item:
+                return "Order item not found or email does not match."
+            order_return = OrderReturn(order_item_id=order_item.id,reason=reason,tenant_id=UUID("a0000000-0000-0000-0000-000000000001"))
+            db.add(order_return)
+            db.commit()
+            db.refresh(order_return)
+
+            return_id = order_return.id
+
+            return f"Return request successfully submitted for product {product_name} for order '{order_number}' return id {return_id}."
+    except Exception as e:
+        return f"Failed to submit order return request: {str(e)}"
+
+db_tools = [get_order_status,create_refund_request,get_subscription_status,get_warranty_claim_status,get_return_status,create_return_request]
+db_llm = llm.bind_tools(db_tools)
+def db_agent_node(state: MessagesState):
+    return {"messages":[db_llm.invoke(state["messages"])]}
+
+db_graph = StateGraph(MessagesState)
+db_graph.add_node("agent",db_agent_node)
+db_graph.add_node("tools",ToolNode(db_tools))
+db_graph.add_edge(START,"agent")
+db_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
+db_graph.add_edge("tools","agent")
+
+db_agent = db_graph.compile()
+
+@tool
+def db_specialist(query:str):
+    """Delegate database-related customer support tasks to a dedicated database specialist agent.
+
+    This specialist interacts with the database to look up real-time statuses
+    and submit requests for orders, refunds, subscriptions, warranty claims,
+    and returns.
+
+    Capabilities:
+        - Check order status (`get_order_status`)
+        - Look up subscription details/status (`get_subscription_status`)
+        - Check warranty claim progress (`get_warranty_claim_status`)
+        - Check product return status (`get_return_status`)
+        - Submit new refund requests (`create_refund_request`)
+        - Submit new return requests (`create_return_request`)
+
+    Args:
+        query: A detailed natural language query or instruction containing all
+          necessary context (e.g., customer email, order ID, return reason).
+
+    Returns:
+        str: The final response from the specialist summarizing the action taken
+             or the data retrieved from the database.
+    """
+    result = db_agent.invoke({"messages":[HumanMessage(query)]})
     return result["messages"][-1].text
 
-specialists = [rag_specialist]
-orchestrator_llm = llm.bind_tools(specialists)
+
+@tool
+def escalate_to_human(summary, reason,customer_email,channel) -> str:
+    """
+    Escalate the current conversation to a human support agent.
+
+    Use this when the customer explicitly asks for a human, when the RAG
+    specialist reports low or no confidence in its answer, or when the
+    request involves account security, safety, or suspected fraud.
+
+    Args:
+        summary: A concise summary, in your own words, of what the customer
+            wants and any relevant context (order numbers, what's already
+            been checked) — written for a human picking this up cold.
+        reason: Why this is being escalated. Must be one of:
+            'customer_requested', 'low_confidence', 'security_sensitive'.
+        customer_email: The customer's email if known, otherwise None.
+        channel: The channel this conversation is happening on. Must be
+            one of: 'web', 'whatsapp', 'email', 'voice'.
+
+    Returns:
+        str: A confirmation message with the escalation reference id,
+             or an error message if the escalation could not be logged.
+    """
+    try:
+        with get_db(write_engine) as db:
+            escalation = Escalation(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=UUID("a0000000-0000-0000-0000-000000000001"),thread_id=thread_id)
+            db.add(escalation)
+            db.commit()
+            db.refresh(escalation)
+
+            escalation_id = escalation.id
+
+            return f"Escalation request successfully submitted escalation id {escalation_id}"
+    except Exception as e:
+        return f"Failed to escalate request to human agent: {str(e)}"
+
+specialists = [rag_specialist,db_specialist]
+orchestrator_llm = llm.bind_tools(specialists + [escalate_to_human])
 
 def orchestrator_node(state: SupportAgent):
-    return {"messages":[orchestrator_llm.invoke(state["messages"])]}
+    messages = [ORCHESTRATOR_SYSTEM_PROMPT] + state["messages"]
+    return {"messages":[orchestrator_llm.invoke(messages)]}
 
 orchestrator_graph = StateGraph(SupportAgent)
 orchestrator_graph.add_node("agent",orchestrator_node)
-orchestrator_graph.add_node("tools",ToolNode(specialists))
+orchestrator_graph.add_node("tools",ToolNode(specialists + [escalate_to_human]))
 orchestrator_graph.add_edge(START,"agent")
 orchestrator_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
 orchestrator_graph.add_edge("tools","agent")
 
 orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
 messages = []
-"""while True:
+while True:
     message = input("\nwhat is your question? ")
     if message.lower() in ["exit","q"]:
         break
     messages.append(HumanMessage(message))
-    result = orchestrator.invoke({"messages":message},{"configurable": {"thread_id": "1"}})
-    reply = result["messages"][-1].content
-    print(reply)"""
-
+    result = orchestrator.invoke({"messages":message},{"configurable": {"thread_id": thread_id}})
+    reply = result["messages"][-1].text
+    print(reply)
     
