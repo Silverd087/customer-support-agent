@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     write_role_password:str
     read_role_user:str
     read_role_password:str
+    human_reviewer_role_user:str
+    human_reviewer_role_password:str
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

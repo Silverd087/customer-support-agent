@@ -12,27 +12,39 @@ from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine,select,and_
-from database.order import Order
-from database.customer import Customer
-from database.pending_refund import PendingRefund
-from database.subscription import Subscription
-from database.warranty_claim import WarrantyClaim
-from database.order_item import OrderItem
-from database.order_return import OrderReturn
-from database.product import Product
-from database.tenant import Tenant
-from database.payment import Payment
-from database.escalation import Escalation
+from database.models.order import Order
+from database.models.customer import Customer
+from database.models.pending_refund import PendingRefund
+from database.models.subscription import Subscription
+from database.models.warranty_claim import WarrantyClaim
+from database.models.order_item import OrderItem
+from database.models.order_return import OrderReturn
+from database.models.product import Product
+from database.models.tenant import Tenant
+from database.models.payment import Payment
+from database.models.escalation import Escalation
 from uuid import UUID,uuid4
-
+from google.auth.transport.requests import Request
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from google.oauth2.credentials import Credentials
+from database.models.pending_email_send import PendingEmailSend
+import asyncio
+from typing import Optional
+from database.session import get_db
 ORCHESTRATOR_SYSTEM_PROMPT = """
-You are Lumen Home's customer support assistant. You have three tools available:
+You are Lumen Home's customer support assistant. You have four tools available:
 
 - rag_specialist: for anything involving policy, pricing, timelines, troubleshooting steps,
   or procedures. Never answer these from memory — always check with rag_specialist first.
 - db_specialist: for anything requiring real account data — order status, subscription
   status, warranty claims, returns, or submitting a refund/return request. Never guess at
   order or account information; always verify through db_specialist.
+- gmail_specialist: for anything involving email correspondence with the customer —
+  finding or reading a previous email thread, or drafting a reply to send by email. It can
+  search and read Gmail threads/messages and create draft replies, but it can never send
+  anything: every draft it creates is only ever queued for a human to review and send
+  separately. Never tell the customer an email has been sent — only that a reply has been
+  drafted and is pending review, and never promise a specific send time you can't guarantee.
 - escalate_to_human: for handing off to a human teammate. See triggers below.
 
 A single request may need more than one tool. For example, a refund request needs both a
@@ -70,6 +82,8 @@ with a plausible-sounding guess.
 checkpointer = MemorySaver()
 thread_id = uuid4()
 RAG_CONFIDENCE_THRESHOLD = 0.5
+ALLOWED_TOOLS = ["search_threads","get_thread","get_message"]
+tenant_id = UUID("a0000000-0000-0000-0000-000000000001")
 llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
 embedding_model = HuggingFaceEmbeddings(
     model_name="BAAI/bge-m3",
@@ -85,10 +99,6 @@ write_engine = create_engine(url=write_url)
 
 read_url = f"postgresql+psycopg2://{settings.read_role_user}:{settings.read_role_password}@localhost/lumen_support"
 read_engine = create_engine(url=read_url)
-
-def get_db(engine):
-    Session = sessionmaker(bind=engine,expire_on_commit=False)
-    return Session()
 
 
 class SupportAgent(TypedDict):
@@ -188,7 +198,7 @@ def create_refund_request(order_number: str, customer_email: str, reason: str) -
             order = db.execute(stmt).scalar_one_or_none()
             if not order:
                 return "Order not found or email does not match."
-            refund = PendingRefund(order_id=order.id,customer_email=customer_email,reason=reason,tenant_id=UUID("a0000000-0000-0000-0000-000000000001"))
+            refund = PendingRefund(order_id=order.id,customer_email=customer_email,reason=reason,tenant_id=tenant_id)
             db.add(refund)
             db.commit()
             db.refresh(refund)
@@ -381,7 +391,7 @@ def escalate_to_human(summary, reason,customer_email,channel) -> str:
     """
     try:
         with get_db(write_engine) as db:
-            escalation = Escalation(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=UUID("a0000000-0000-0000-0000-000000000001"),thread_id=thread_id)
+            escalation = Escalation(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=tenant_id,thread_id=thread_id)
             db.add(escalation)
             db.commit()
             db.refresh(escalation)
@@ -392,7 +402,112 @@ def escalate_to_human(summary, reason,customer_email,channel) -> str:
     except Exception as e:
         return f"Failed to escalate request to human agent: {str(e)}"
 
-specialists = [rag_specialist,db_specialist]
+
+
+def get_gmail_headers():
+    creds = Credentials.from_authorized_user_file("gmail_token.json")
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        with open("gmail_token.json", "w") as f:
+            f.write(creds.to_json())
+    return {"Authorization": f"Bearer {creds.token}"}
+
+mcp_client = MultiServerMCPClient({
+    "gmail": {
+        "transport": "streamable_http",
+        "url": "https://gmailmcp.googleapis.com/mcp/v1",
+        "headers": get_gmail_headers(),
+    }
+})
+
+all_gmail_tools =  asyncio.run(mcp_client.get_tools())
+all_gmail_tools_by_name = {tool.name: tool for tool in all_gmail_tools}
+@tool
+def create_draft(customer_email:str,subject:str,body:str,replyToMessageId:Optional[str]=None):
+    """
+    Create a draft reply email to a customer and queue it for human approval.
+
+    This never sends anything. It creates a Gmail draft via the Gmail MCP
+    connection and logs a 'pending_review' row for a human to review and
+    send later — the send step happens outside this conversation entirely.
+
+    Args:
+        customer_email: The recipient's email address.
+        subject: The subject line for the draft.
+        body: The plain-text body of the draft.
+        replyToMessageId: The id of the message being replied to, if this
+            draft is a reply within an existing thread (get it from
+            search_threads/get_thread). Omit for a new, unthreaded email.
+
+    Returns:
+        str: A confirmation message with the pending email id, or an error
+             message if the draft could not be created or logged.
+    """
+    try:
+        with get_db(write_engine) as db:
+            create_draft_tool = all_gmail_tools_by_name.get("create_draft")
+            if not create_draft_tool:
+                print("Available tools:", list(all_gmail_tools_by_name.keys()))
+                return
+            payload = {
+                "to":[customer_email],
+                "subject":subject,
+                "body":body,
+            }
+            if replyToMessageId:
+                payload["replyToMessageId"] = replyToMessageId
+            response = create_draft_tool.invoke(payload)
+            pending_email = PendingEmailSend(tenant_id=tenant_id,thread_id=thread_id,gmail_draft_id=response["id"],customer_email=customer_email,subject=subject)
+            db.add(pending_email)
+            db.commit()
+            db.refresh(pending_email)
+            return f"Email draft successfully submitted pending email id {pending_email.id}"
+    except Exception as e:
+        return f"Failed to create email draft to customer: {str(e)}"
+
+
+gmail_tools = [tool for tool in all_gmail_tools if tool.name in ALLOWED_TOOLS] + [create_draft]
+
+gmail_llm = llm.bind_tools(gmail_tools)
+
+def gmail_agent_node(state:MessagesState):
+    return {"messages":[gmail_llm.invoke(state["messages"])]}
+
+
+gmail_graph = StateGraph(MessagesState)
+gmail_graph.add_node("agent",gmail_agent_node)
+gmail_graph.add_node("tools",ToolNode(gmail_tools))
+gmail_graph.add_edge(START,"agent")
+gmail_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
+gmail_graph.add_edge("tools","agent")
+
+gmail_agent = gmail_graph.compile()
+
+@tool
+def gmail_specialist(query:str):
+    """
+    Delegate email-related customer support tasks to a dedicated Gmail specialist agent.
+
+    Use this when the customer's request involves finding, reading, or
+    replying to email correspondence — e.g. checking what was said in a
+    previous email thread, or drafting a reply to send to the customer.
+    This specialist can search and read Gmail threads/messages and create
+    draft replies, but it can never send anything: every draft it creates
+    is only ever queued for a human to review and send separately.
+
+    Args:
+        query: A natural-language description of the email task to perform,
+            including any identifying details (customer email address,
+            subject/topic, what the reply should say) needed to complete it.
+
+    Returns:
+        str: The specialist's response — search/read results, or
+             confirmation that a draft was created and queued for review.
+    """
+    result = gmail_agent.invoke({"messages":HumanMessage(query)})
+    return result["messages"][-1].text
+
+specialists = [rag_specialist,db_specialist,gmail_specialist]
 orchestrator_llm = llm.bind_tools(specialists + [escalate_to_human])
 
 def orchestrator_node(state: SupportAgent):

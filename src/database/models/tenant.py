@@ -1,4 +1,4 @@
-from database.base import Base
+from database.models.base import Base
 from sqlalchemy.orm import mapped_column,Mapped,relationship
 import uuid
 from sqlalchemy import UUID,DateTime,Text,Enum,func
@@ -35,4 +35,4 @@ class Tenant(Base):
     warranty_claims:Mapped[list["WarrantyClaim"]] = relationship("WarrantyClaim",back_populates="tenant")
     subscriptions:Mapped[list["Subscription"]] = relationship("Subscription",back_populates="tenant")
     escalations:Mapped[list["Escalation"]] = relationship("Escalation",back_populates="tenant")
-
+    pending_email_sends:Mapped[list["PendingEmailSend"]] = relationship("PendingEmailSend",back_populates="tenant")
