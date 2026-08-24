@@ -522,13 +522,19 @@ orchestrator_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools
 orchestrator_graph.add_edge("tools","agent")
 
 orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
-messages = []
-while True:
-    message = input("\nwhat is your question? ")
-    if message.lower() in ["exit","q"]:
-        break
-    messages.append(HumanMessage(message))
-    result = orchestrator.invoke({"messages":message},{"configurable": {"thread_id": thread_id}})
-    reply = result["messages"][-1].text
-    print(reply)
+
+def handle_incoming(query:str,thread_id:str,channel:str):
+    result = orchestrator.invoke({"messages":HumanMessage(query),"channel":channel},{"configurable": {"thread_id": thread_id}})
+    return result["messages"][-1].text
+
+if __name__ == "__main__":
+    messages = []
+    while True:
+        message = input("\nwhat is your question? ")
+        if message.lower() in ["exit","q"]:
+            break
+        messages.append(HumanMessage(message))
+        result = orchestrator.invoke({"messages":message},{"configurable": {"thread_id": thread_id}})
+        reply = result["messages"][-1].text
+        print(reply)
     

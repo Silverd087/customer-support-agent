@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     read_role_password:str
     human_reviewer_role_user:str
     human_reviewer_role_password:str
-
+    verify_token:str
+    app_secret:str
+    whatsapp_access_token:str
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"
