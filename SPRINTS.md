@@ -147,12 +147,35 @@ Turn Sprint 2's retrieval + generation logic into a self-contained specialist ag
 
 ## Sprint 9 — Voice channel
 
-- [ ] Integrate Wispr Flow for speech-to-text (voice in)
-- [ ] Integrate ElevenLabs `text_to_speech.convert` (voice out)
-- [ ] Wire an adapter that takes audio in, transcribes, invokes the orchestrator, synthesizes the reply
-- [ ] Test a full voice round-trip
+**Design update:** dropped Wispr Flow (no public API). Using Twilio Voice + Media Streams to bridge the phone call, OpenAI's Realtime API (GPT-Realtime-Whisper) for streaming STT with server-side VAD for turn detection, and streaming ElevenLabs TTS for the reply. Unlike Gmail/WhatsApp, this channel is a persistent duplex WebSocket per call, not request/response — build it in this order, confirming each piece works before adding the next.
 
-**Done when:** you can speak a question and hear a correct, grounded spoken answer.
+**Fix what's already broken in `voice_adapter.py` before adding anything:**
+- [x] Add the missing `@` on `router.post("/voice/incoming")` and `router.websocket("/ws/call")` — as written, neither route is actually registered
+- [x] Remove the `handle_incoming` call from inside the `media` branch — it currently fires per audio frame (~50x/sec); it belongs later, once, per completed utterance
+
+**Get the call connecting (no STT/TTS yet — just prove the plumbing):**
+- [ ] Buy/configure a Twilio number, point its voice webhook at `/voice/incoming` via ngrok
+- [ ] Confirm a real call reaches `/voice/incoming` and Twilio opens the WebSocket to `/ws/call`
+- [ ] Log every `start`/`media`/`stop` event so you can see the stream is alive before building anything on top of it
+
+**Wire streaming STT (this replaces manual buffering):**
+- [ ] Open a second WebSocket to OpenAI's Realtime API when the call starts, alongside the Twilio one
+- [ ] Send a `session.update` event configuring `turn_detection` (start with `semantic_vad`)
+- [ ] Forward each decoded Twilio `media` payload to the Realtime API as `input_audio_buffer.append` — this is your buffer, it lives server-side now
+- [ ] Confirm `input_audio_buffer.speech_started` / `speech_stopped` fire in your logs when you talk and pause on a test call
+- [ ] Capture the transcript from the completion event and call `handle_incoming` with it — confirm the orchestrator's text reply shows up in your logs (audio still not wired yet)
+
+**Wire streaming TTS out:**
+- [ ] Call ElevenLabs' streaming endpoint with the orchestrator's reply text
+- [ ] Transcode the output to mulaw/8kHz (Twilio's required format) if ElevenLabs isn't already returning that
+- [ ] Send it back to Twilio as outbound `media` events on the same WebSocket, confirm you can hear the reply on a real call
+
+**Make it interruptible:**
+- [ ] Split `call()` into two concurrent pieces instead of one linear loop: a receiver (reads Twilio events, feeds the Realtime API, watches for `speech_started`/`speech_stopped`) and a cancellable player task (streams TTS audio out)
+- [ ] On `speech_started` while the player task is active, cancel it and send Twilio a `clear` event to flush buffered playback
+- [ ] Test: interrupt the agent mid-reply on a real call and confirm it actually stops talking and starts listening
+
+**Done when:** you can hold a full duplex phone conversation with the orchestrator — including interrupting it mid-sentence and having it stop and listen instead of talking over you.
 
 ---
 

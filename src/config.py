@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     verify_token:str
     app_secret:str
     whatsapp_access_token:str
+    openai_api_key:str
+    elevenlabs_api_key:str
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"
