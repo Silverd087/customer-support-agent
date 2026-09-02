@@ -6,7 +6,12 @@ from agent import handle_incoming
 from langchain.messages import HumanMessage
 import base64
 from bs4 import BeautifulSoup 
+from tenacity import retry,wait_exponential,stop_after_attempt,retry_if_exception_type
+from google.auth.exceptions import RefreshError
 
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),retry=retry_if_exception_type(RefreshError))
 def get_gmail_service():
     """Same gmail_token.json the specialist uses — sending only needs
     gmail.compose, which is already granted, so no separate credential
@@ -19,28 +24,41 @@ def get_gmail_service():
             f.write(creds.to_json())
     return build("gmail", "v1", credentials=creds)
 
-def poll_gmail_for_new_messages():
-    service = get_gmail_service()
-    results = service.users().messages().list(
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+def list_emails_with_retry(service):
+    return service.users().messages().list(
         userId="me",
         q='is:unread'
     ).execute()
-    messages_ids = results.get('messages', [])
-    messages = []
-    for msg in messages_ids:
-        message = service.users().messages().get(
-            userId='me', id=msg['id']
-        ).execute()
-        messages.append(message)
-    return messages
 
-def mark_as_read(id:str):
-    service = get_gmail_service()
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+def get_email_with_retry(service,id):
+    return service.users().messages().get(
+            userId='me', id=id
+        ).execute()
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+def mark_as_read_with_retry(service):
     service.users().messages().modify(
         userId="me",
         id=id,
         body={'removeLabelIds': ['UNREAD']}
     ).execute()
+
+
+
+def poll_gmail_for_new_messages():
+    service = get_gmail_service()
+    results = list_emails_with_retry(service)
+    messages_ids = results.get('messages', [])
+    messages = []
+    for msg in messages_ids:
+        message = get_email_with_retry(service,msg['id'])
+    return messages
+
+def mark_as_read(id:str):
+    service = get_gmail_service()
+    mark_as_read_with_retry(service)
 
 def _extract_body(payload) -> str | None:
     """Walk a Gmail message payload for its text content.

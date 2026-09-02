@@ -1,7 +1,7 @@
 from database.models.base import Base
 from sqlalchemy.orm import mapped_column,Mapped,relationship
 import uuid
-from sqlalchemy import UUID,ForeignKey,Enum,String,Text,DateTime,func
+from sqlalchemy import UUID,ForeignKey,Enum,String,Text,DateTime,func,UniqueConstraint
 import enum
 from datetime import datetime
 from typing import Optional
@@ -23,6 +23,10 @@ class Status(enum.Enum):
 
 class Escalation(Base):
     __tablename__ = "escalations"
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id","thread_id","reason",name="uix_tenant_thread_reason")
+    )
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)
     thread_id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))

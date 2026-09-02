@@ -1,7 +1,7 @@
 from database.models.base import Base
 from sqlalchemy.orm import mapped_column,Mapped,relationship
 import uuid
-from sqlalchemy import UUID,String,DateTime,ForeignKey,Text,Enum,func
+from sqlalchemy import UUID,String,DateTime,ForeignKey,Text,Enum,func,UniqueConstraint
 from typing import Optional
 from datetime import datetime
 import enum
@@ -13,6 +13,9 @@ class Status(enum.Enum):
 
 class PendingRefund(Base):
     __tablename__ = "pending_refunds"
+    __table_args__ = (
+        UniqueConstraint("tenant_id","reason","order_id",name="uix_tenant_thread_order")
+    )
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     order_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"),nullable=False)
     customer_email:Mapped[str] = mapped_column(String(50),nullable=False)

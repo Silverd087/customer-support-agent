@@ -10,7 +10,6 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode,tools_condition
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.postgres import PostgresSaver
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine,select,and_
 from database.models.order import Order
 from database.models.customer import Customer
@@ -32,6 +31,15 @@ import asyncio
 from typing import Optional
 from database.session import get_db
 from pydantic import BaseModel,Field
+from psycopg_pool import ConnectionPool
+from dotenv import load_dotenv
+from tenacity import retry,stop_after_attempt,wait_exponential, retry_if_exception_type
+from google.api_core.exceptions import ServiceUnavailable,DeadlineExceeded
+from sqlalchemy.exc import OperationalError, DBAPIError
+from google.auth.exceptions import RefreshError
+from sqlalchemy.dialects.postgresql import insert
+
+load_dotenv()
 
 ORCHESTRATOR_SYSTEM_PROMPT = """
 You are Lumen Home's customer support assistant. You have four tools available:
@@ -127,8 +135,10 @@ write_engine = create_engine(url=write_url)
 read_url = f"postgresql+psycopg2://{settings.read_role_user}:{settings.read_role_password}@localhost/lumen_support"
 read_engine = create_engine(url=read_url)
 
-checkpointer = PostgresSaver.fromConnString(f"postgresql://settings.db_user:settings.db_password@localhost:5432/lumen_support")
-asyncio.run(checkpointer.setup())
+db_uri = f"postgresql://{settings.db_user}:{settings.db_password}@localhost:5432/lumen_support"
+pool = ConnectionPool(conninfo=db_uri, max_size=20, kwargs={"autocommit": True})
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()
 
 class RagState(MessagesState):
     revision_count: int
@@ -141,7 +151,7 @@ class Critique(BaseModel):
     verdict:Literal["APPROVED","REVISE"] = Field(description="Binary critique decision. 'APPROVED': The context fully supports the answer and resolves the user's intent. 'REVISE': Retrieval lacks necessary facts, contains off-topic noise, or the generated answer hallucinates/misinterprets context.")
     feedback_text:str = Field(default=None,description="Actionable critique and improvement suggestions. Required if critique is 'REVISE' detailing retrieval flaws or factual inaccuracies; optional or empty if 'APPROVED'.")
 
-@tool
+@tool(response_format="content_and_artifact")
 def search_knowledge_base(query: str):
     """Searches the internal vector store for relevant documentation chunks and returns top matches with a confidence score.
 
@@ -160,17 +170,21 @@ def search_knowledge_base(query: str):
 
 rag_llm = llm.bind_tools([search_knowledge_base])
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((DeadlineExceeded,ServiceUnavailable)))
+def invoke_with_retry(llm, messages):
+    return llm.invoke(messages)
+
 def rag_agent_node(state: RagState):
-    return {"messages":[rag_llm.invoke(state["messages"])]}
+    return {"messages":[invoke_with_retry(rag_llm,state["messages"])]}
 
 def critique(state:RagState):
     draft = state["messages"][-1].text
     tool_messages = [msg for msg in state["messages"] if isinstance(msg, ToolMessage)]  
     all_chunks = []
     for tm in tool_messages:
-        all_chunks.extend(tm.content["context_chunks"])
+        all_chunks.extend(tm.artifact["context_chunks"])
     critique_llm = llm.with_structured_output(Critique)
-    result = critique_llm.invoke(CRITIQUE_SYSTEM_PROMPT.format(retrieved_context="\n\n".join(all_chunks),draft_answer=draft))
+    result = invoke_with_retry(critique_llm,CRITIQUE_SYSTEM_PROMPT.format(retrieved_context="\n\n".join(all_chunks),draft_answer=draft))
     verdict = result.verdict
     feedback_text = result.feedback_text
     if verdict == "APPROVED":
@@ -204,6 +218,9 @@ rag_graph.add_conditional_edges("critique",continue_agent,{END:END,"agent":"agen
 
 rag_agent = rag_graph.compile()
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),retry=retry_if_exception_type((OperationalError, DBAPIError)))
+def run_query_with_retry(fn):
+    return fn()
 
 
 @tool
@@ -217,7 +234,7 @@ def rag_specialist(question:str):
     confidence = None
     for msg in reversed(result["messages"]):
         if getattr(msg, "name", None) == "search_knowledge_base":
-            confidence = msg.content.get("confidence") if hasattr(msg, "content") else None
+            confidence = msg.artifact.get("confidence") if hasattr(msg, "artifact") else None
 
     if confidence is not None and confidence < RAG_CONFIDENCE_THRESHOLD:
         return f"{answer}\n\n[LOW_CONFIDENCE: retrieval score {confidence:.2f}]"
@@ -240,7 +257,7 @@ def get_order_status(order_number: str, customer_email: str)->str:
     try:
         with get_db(read_engine) as db:
             stmt = select(Order.status).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
-            status = db.scalar(stmt)
+            status = run_query_with_retry(lambda:db.scalar(stmt))
             if status is None:
                 return "Order not found or email does not match."
             return status.value if hasattr(status, "value") else str(status)
@@ -264,14 +281,14 @@ def create_refund_request(order_number: str, customer_email: str, reason: str) -
     try:
         with get_db(write_engine) as db:
             stmt = select(Order).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
-            order = db.execute(stmt).scalar_one_or_none()
+            order = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
             if not order:
                 return "Order not found or email does not match."
-            refund = PendingRefund(order_id=order.id,customer_email=customer_email,reason=reason,tenant_id=tenant_id)
-            db.add(refund)
-            db.commit()
-            db.refresh(refund)
-
+            insert_stmt = insert(PendingRefund).values(order_id=order.id,customer_email=customer_email,reason=reason,tenant_id=tenant_id).on_conflict_do_nothing(index_elements=["tenant_id","reason","order_id"]).returning(PendingRefund)
+            refund = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
+            if refund is None:
+                stmt = select(PendingRefund).where(PendingRefund.order_id == order.id, PendingRefund.customer_email == customer_email, PendingRefund.reason == reason, PendingRefund.tenant_id == tenant_id)
+                refund = run_query_with_retry(lambda: db.execute(stmt).scalar_one_or_none())
             refund_id = refund.id
             ref_info = f" (Refund ID: {refund_id})" if refund_id else ""
 
@@ -294,7 +311,7 @@ def get_subscription_status(customer_email:str)->str:
     try:
         with get_db(read_engine) as db:
             stmt = select(Subscription).join(Subscription.customer).where(Customer.email == customer_email).order_by(Subscription.current_period_start.desc())
-            subs = db.scalars(stmt).all()
+            subs = run_query_with_retry(lambda:db.scalars(stmt).all())
             if subs == []:
                 return "Subscription not found or email does not match."
             lines = [
@@ -324,7 +341,7 @@ def get_warranty_claim_status(order_number:str,customer_email:str)->str:
     try:
         with get_db(read_engine) as db:
             stmt = select(WarrantyClaim).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.warranty_claims).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(WarrantyClaim.created_at.desc())
-            claims = db.scalars(stmt).all()
+            claims = run_query_with_retry(lambda:db.scalars(stmt).all())
             if claims == []:
                 return "warranty claim not found or email does not match."
             lines = [
@@ -351,7 +368,7 @@ def get_return_status(order_number:str,customer_email:str)->str:
     try:
         with get_db(read_engine) as db:
             stmt = select(OrderReturn).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.order_returns).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(OrderReturn.requested_at.desc())
-            returns = db.scalars(stmt).all()
+            returns = run_query_with_retry(lambda:db.scalars(stmt).all())
             if returns == []:
                 return "order return not found or email does not match."
             lines = [
@@ -379,14 +396,15 @@ def create_return_request(order_number, customer_email, product_name,reason):
     try:
         with get_db(write_engine) as db:
             stmt = select(OrderItem).join(OrderItem.order).join(Order.customer).join(OrderItem.product).where(and_(Order.number == order_number,Customer.email == customer_email,Product.name == product_name))
-            order_item = db.execute(stmt).scalar_one_or_none()
+            order_item = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
             if not order_item:
                 return "Order item not found or email does not match."
-            order_return = OrderReturn(order_item_id=order_item.id,reason=reason,tenant_id=UUID("a0000000-0000-0000-0000-000000000001"))
-            db.add(order_return)
-            db.commit()
-            db.refresh(order_return)
-
+            order_return = OrderReturn(order_item_id=order_item.id,reason=reason,tenant_id=tenant_id)
+            insert_stmt = insert(OrderReturn).values(order_item_id=order_item.id,reason=reason,tenant_id=tenant_id).on_conflict_do_nothing(index_elements=["order_item_id","reason","tenant_id"]).returning(OrderReturn)
+            order_return = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
+            if order_return is None:
+                stmt = select(OrderReturn).where(OrderReturn.order_item_id == order_item.id, OrderReturn.reason == reason, OrderReturn.tenant_id == tenant_id)
+                order_return = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
             return_id = order_return.id
 
             return f"Return request successfully submitted for product {product_name} for order '{order_number}' return id {return_id}."
@@ -396,7 +414,7 @@ def create_return_request(order_number, customer_email, product_name,reason):
 db_tools = [get_order_status,create_refund_request,get_subscription_status,get_warranty_claim_status,get_return_status,create_return_request]
 db_llm = llm.bind_tools(db_tools)
 def db_agent_node(state: MessagesState):
-    return {"messages":[db_llm.invoke(state["messages"])]}
+    return {"messages":[invoke_with_retry(db_llm,state["messages"])]}
 
 db_graph = StateGraph(MessagesState)
 db_graph.add_node("agent",db_agent_node)
@@ -460,17 +478,23 @@ def escalate_to_human(summary, reason,customer_email,channel) -> str:
     """
     try:
         with get_db(write_engine) as db:
-            escalation = Escalation(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=tenant_id,thread_id=thread_id)
-            db.add(escalation)
-            db.commit()
-            db.refresh(escalation)
-
+            insert_stmt = insert(Escalation).values(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=tenant_id,thread_id=thread_id).on_conflict_do_nothing(index_elements=["tenant_id","reason","thread_id"]).returning(Escalation)
+            escalation = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
+            if escalation is None:
+                stmt = select(Escalation).where(Escalation.reason == reason, Escalation.customer_email == customer_email, Escalation.summary == summary, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id, Escalation.channel == channel)
+                escalation = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
             escalation_id = escalation.id
 
             return f"Escalation request successfully submitted escalation id {escalation_id}"
     except Exception as e:
         return f"Failed to escalate request to human agent: {str(e)}"
 
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),retry=retry_if_exception_type((RefreshError)))
+def get_email_with_retry(service,id):
+    return service.users().messages().get(
+            userId='me', id=id
+        ).execute()
 
 
 def get_gmail_headers():
@@ -526,10 +550,11 @@ def create_draft(customer_email:str,subject:str,body:str,replyToMessageId:Option
             if replyToMessageId:
                 payload["replyToMessageId"] = replyToMessageId
             response = create_draft_tool.invoke(payload)
-            pending_email = PendingEmailSend(tenant_id=tenant_id,thread_id=thread_id,gmail_draft_id=response["id"],customer_email=customer_email,subject=subject)
-            db.add(pending_email)
-            db.commit()
-            db.refresh(pending_email)
+            insert_stmt = insert(PendingEmailSend).values(tenant_id=tenant_id,thread_id=thread_id,gmail_draft_id=response["id"],customer_email=customer_email,subject=subject).on_conflict_do_nothing(index_elements=["tenant_id","thread_id",]).returning(PendingEmailSend)
+            pending_email = run_query_with_retry(lambda: db.scalars(insert_stmt).one_or_none())
+            if pending_email is None:
+                stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.gmail_draft_id == response["id"], PendingEmailSend.customer_email == customer_email,PendingEmailSend.subject == subject)
+                pending_email = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
             return f"Email draft successfully submitted pending email id {pending_email.id}"
     except Exception as e:
         return f"Failed to create email draft to customer: {str(e)}"
@@ -540,7 +565,7 @@ gmail_tools = [tool for tool in all_gmail_tools if tool.name in ALLOWED_TOOLS] +
 gmail_llm = llm.bind_tools(gmail_tools)
 
 def gmail_agent_node(state:MessagesState):
-    return {"messages":[gmail_llm.invoke(state["messages"])]}
+    return {"messages":[invoke_with_retry(gmail_llm,state["messages"])]}
 
 
 gmail_graph = StateGraph(MessagesState)
@@ -581,7 +606,7 @@ orchestrator_llm = llm.bind_tools(specialists + [escalate_to_human])
 
 def orchestrator_node(state: SupportAgent):
     messages = [ORCHESTRATOR_SYSTEM_PROMPT] + state["messages"]
-    return {"messages":[orchestrator_llm.invoke(messages)]}
+    return {"messages":[invoke_with_retry(orchestrator_llm,messages)]}
 
 orchestrator_graph = StateGraph(SupportAgent)
 orchestrator_graph.add_node("agent",orchestrator_node)
@@ -603,7 +628,9 @@ if __name__ == "__main__":
         if message.lower() in ["exit","q"]:
             break
         messages.append(HumanMessage(message))
-        result = orchestrator.invoke({"messages":message},{"configurable": {"thread_id": thread_id}})
+        result = orchestrator.invoke({"messages":message},{"configurable": {"thread_id": thread_id,"metadata": {"thread_id": thread_id}}})
         reply = result["messages"][-1].text
         print(reply)
+
+    pool.close()
     
