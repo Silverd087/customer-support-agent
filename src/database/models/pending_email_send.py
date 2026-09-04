@@ -15,7 +15,7 @@ class Status(enum.Enum):
 class PendingEmailSend(Base):
     __tablename__ = "pending_email_sends"
     __table_args__ = (
-        UniqueConstraint("tenant_id","thread_id",name="uix_tenant_thread"),
+        UniqueConstraint("tenant_id","thread_id","replyToMessageId",name="uix_tenant_thread_reply_id"),
     )
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)
