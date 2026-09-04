@@ -25,7 +25,7 @@ class Escalation(Base):
     __tablename__ = "escalations"
 
     __table_args__ = (
-        UniqueConstraint("tenant_id","thread_id","reason",name="uix_tenant_thread_reason")
+        UniqueConstraint("tenant_id","thread_id","reason",name="uix_tenant_thread_reason"),
     )
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)

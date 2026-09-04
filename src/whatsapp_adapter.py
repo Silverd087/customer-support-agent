@@ -57,6 +57,7 @@ async def receive_message(request: Request):
         last_message = messages[-1]["text"]["body"]
         phone_number_id = value["metadata"]["phone_number_id"]
         phone_number = messages[-1]["from"]
+        idempotency_key = last_message["id"]
         result = handle_incoming(last_message,thread_id=phone_number,channel="whatsapp")
 
 
@@ -65,7 +66,8 @@ async def receive_message(request: Request):
 
         headers = {
         "Authorization": f"Bearer {settings.whatsapp_access_token}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Idempotency-Key": f"{idempotency_key}"
         }
 
         post_payload = {

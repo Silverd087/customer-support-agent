@@ -194,13 +194,13 @@ Do this only once Sprints 3–9 are solid — it's an upgrade to one already-wor
 
 ## Sprint 10 — Production hardening (app-level)
 
-- [ ] Swap `MemorySaver` for `PostgresSaver` on the orchestrator's checkpointer
-- [ ] Add structured logging (or LangSmith tracing) covering: which specialists the orchestrator called and in what order, each specialist's own tool calls, and the final response — all tagged with `thread_id`
-- [ ] Add retries + timeouts (e.g. `tenacity`) on every external call: LLM, embeddings, DB, ElevenLabs, Wispr Flow, WhatsApp, Gmail — remember a single turn may now chain several LLM calls across specialists
-- [ ] Add per-customer/thread rate limiting
-- [ ] Move all secrets to env vars / a secrets manager; double-check nothing is hardcoded or committed
-- [ ] Add idempotency: dedupe on provider message id so retried webhooks don't double-process
-- [ ] Add a lightweight `/health` endpoint (used by the Docker healthcheck and k8s probes in Sprint 10b)
+- [x] Swap `MemorySaver` for `PostgresSaver` on the orchestrator's checkpointer — using a manually-built `psycopg_pool.ConnectionPool` passed directly to `PostgresSaver`, not `from_conn_string`'s context manager, since the graph is compiled once at module level and imported by several different entry points
+- [ ] Add structured logging (or LangSmith tracing) covering: which specialists the orchestrator called and in what order, each specialist's own tool calls, and the final response — all tagged with `thread_id` — LangSmith env var loading fixed (needed `load_dotenv()`, pydantic-settings doesn't populate `os.environ`); structlog for everything outside the LLM trace still not wired in
+- [ ] Add retries + timeouts (e.g. `tenacity`) on every external call — LLM calls (all 5) and DB reads/writes in `agent.py`'s tools done; Gmail reads/mark-as-read in `gmail_adapter.py` done; still open: Gmail `create_draft`'s MCP call, WhatsApp send, voice adapter's Realtime API connection
+- [ ] Add per-customer/thread rate limiting — not started
+- [ ] Move all secrets to env vars / a secrets manager; double-check nothing is hardcoded or committed — `.env` pattern already in place from Sprint 0, still needs a final audit pass
+- [ ] Add idempotency: dedupe on provider message id so retried webhooks don't double-process — `escalate_to_human` has DB-level dedup via a unique constraint + conflict handling (in progress, has open bugs); WhatsApp send about to get an `Idempotency-Key` header keyed off the inbound wamid; note this covers duplicate *sends*, not yet duplicate *inbound processing* — nothing currently stops `receive_message` from calling `handle_incoming` twice if Meta redelivers the same webhook, that's a separate check still needed
+- [ ] Add a lightweight `/health` endpoint (used by the Docker healthcheck and k8s probes in Sprint 10b) — not started
 
 **Done when:** you can kill and restart the process mid-conversation and it resumes correctly, and a duplicate webhook delivery doesn't produce a duplicate reply.
 

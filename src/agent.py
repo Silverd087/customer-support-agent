@@ -38,6 +38,7 @@ from google.api_core.exceptions import ServiceUnavailable,DeadlineExceeded
 from sqlalchemy.exc import OperationalError, DBAPIError
 from google.auth.exceptions import RefreshError
 from sqlalchemy.dialects.postgresql import insert
+import hashlib
 
 load_dotenv()
 
@@ -286,8 +287,9 @@ def create_refund_request(order_number: str, customer_email: str, reason: str) -
                 return "Order not found or email does not match."
             insert_stmt = insert(PendingRefund).values(order_id=order.id,customer_email=customer_email,reason=reason,tenant_id=tenant_id).on_conflict_do_nothing(index_elements=["tenant_id","reason","order_id"]).returning(PendingRefund)
             refund = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
+            db.commit()
             if refund is None:
-                stmt = select(PendingRefund).where(PendingRefund.order_id == order.id, PendingRefund.customer_email == customer_email, PendingRefund.reason == reason, PendingRefund.tenant_id == tenant_id)
+                stmt = select(PendingRefund).where(PendingRefund.order_id == order.id, PendingRefund.reason == reason, PendingRefund.tenant_id == tenant_id)
                 refund = run_query_with_retry(lambda: db.execute(stmt).scalar_one_or_none())
             refund_id = refund.id
             ref_info = f" (Refund ID: {refund_id})" if refund_id else ""
@@ -402,6 +404,7 @@ def create_return_request(order_number, customer_email, product_name,reason):
             order_return = OrderReturn(order_item_id=order_item.id,reason=reason,tenant_id=tenant_id)
             insert_stmt = insert(OrderReturn).values(order_item_id=order_item.id,reason=reason,tenant_id=tenant_id).on_conflict_do_nothing(index_elements=["order_item_id","reason","tenant_id"]).returning(OrderReturn)
             order_return = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
+            db.commit()
             if order_return is None:
                 stmt = select(OrderReturn).where(OrderReturn.order_item_id == order_item.id, OrderReturn.reason == reason, OrderReturn.tenant_id == tenant_id)
                 order_return = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
@@ -480,8 +483,9 @@ def escalate_to_human(summary, reason,customer_email,channel) -> str:
         with get_db(write_engine) as db:
             insert_stmt = insert(Escalation).values(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=tenant_id,thread_id=thread_id).on_conflict_do_nothing(index_elements=["tenant_id","reason","thread_id"]).returning(Escalation)
             escalation = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
+            db.commit()
             if escalation is None:
-                stmt = select(Escalation).where(Escalation.reason == reason, Escalation.customer_email == customer_email, Escalation.summary == summary, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id, Escalation.channel == channel)
+                stmt = select(Escalation).where(Escalation.reason == reason, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id)
                 escalation = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
             escalation_id = escalation.id
 
@@ -549,9 +553,13 @@ def create_draft(customer_email:str,subject:str,body:str,replyToMessageId:Option
             }
             if replyToMessageId:
                 payload["replyToMessageId"] = replyToMessageId
+            else:
+                content = f"{subject}\0{body}".encode("utf-8")
+                replyToMessageId = hashlib.sha256(content).hexdigest()
             response = create_draft_tool.invoke(payload)
-            insert_stmt = insert(PendingEmailSend).values(tenant_id=tenant_id,thread_id=thread_id,gmail_draft_id=response["id"],customer_email=customer_email,subject=subject).on_conflict_do_nothing(index_elements=["tenant_id","thread_id",]).returning(PendingEmailSend)
+            insert_stmt = insert(PendingEmailSend).values(tenant_id=tenant_id,thread_id=thread_id,gmail_draft_id=response["id"],customer_email=customer_email,subject=subject,replyToMessageId = replyToMessageId).on_conflict_do_nothing(index_elements=["tenant_id","thread_id"]).returning(PendingEmailSend)
             pending_email = run_query_with_retry(lambda: db.scalars(insert_stmt).one_or_none())
+            db.commit()
             if pending_email is None:
                 stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.gmail_draft_id == response["id"], PendingEmailSend.customer_email == customer_email,PendingEmailSend.subject == subject)
                 pending_email = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())

@@ -15,7 +15,7 @@ class Status(enum.Enum):
 class PendingEmailSend(Base):
     __tablename__ = "pending_email_sends"
     __table_args__ = (
-        UniqueConstraint("tenant_id","thread_id",name="uix_tenant_thread")
+        UniqueConstraint("tenant_id","thread_id",name="uix_tenant_thread"),
     )
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)
@@ -28,6 +28,7 @@ class PendingEmailSend(Base):
     reviewed_by:Mapped[Optional[str]] = mapped_column(Text,nullable=True)
     reviewed_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
     sent_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
+    replyToMessageId:Mapped[Optional[str]] = mapped_column(String(100))
 
 
     tenant:Mapped["Tenant"] = relationship("Tenant",back_populates="pending_email_sends")

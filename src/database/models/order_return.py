@@ -16,7 +16,7 @@ class OrderReturn(Base):
     __tablename__ = "order_returns"
 
     __table_args__ = (
-        UniqueConstraint("order_item_id","reason","tenant_id",name="uix_tenat_reason_order_item")
+        UniqueConstraint("order_item_id","reason","tenant_id",name="uix_tenat_reason_order_item"),
     )
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     order_item_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("order_items.id"))

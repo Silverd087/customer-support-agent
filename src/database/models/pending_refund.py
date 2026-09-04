@@ -14,7 +14,7 @@ class Status(enum.Enum):
 class PendingRefund(Base):
     __tablename__ = "pending_refunds"
     __table_args__ = (
-        UniqueConstraint("tenant_id","reason","order_id",name="uix_tenant_thread_order")
+        UniqueConstraint("tenant_id","reason","order_id",name="uix_tenant_thread_order"),
     )
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     order_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"),nullable=False)
