@@ -60,7 +60,7 @@ async def receive_message(request: Request):
         phone_number_id = value["metadata"]["phone_number_id"]
         phone_number = messages[-1]["from"]
         logger.info("whatsapp_message_received", phone_number=phone_number, message_id=messages[-1]["id"])
-        idempotency_key = last_message["id"]
+        idempotency_key = messages[-1]["id"]
         result = handle_incoming(last_message,thread_id=phone_number,channel="whatsapp")
 
 
