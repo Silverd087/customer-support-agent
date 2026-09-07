@@ -7,6 +7,7 @@ import asyncio
 import websockets
 from config import settings
 from elevenlabs import AsyncElevenLabs,VoiceSettings
+from logger import logger
 
 router = APIRouter()
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -94,11 +95,11 @@ async def call(twilio_ws:WebSocket):
                         event_type = data.get("event")
 
                         if event_type == "connected":
-                            print("Twilio Media Stream connection established")
+                            logger.info("twilio_stream_connected")
                         elif event_type == "start":
                             stream_sid = data["start"]["streamSid"]
                             call_sid = data["start"]["callSid"]
-                            print(f"Call started: {call_sid}, Stream: {stream_sid}")
+                            logger.info("call_started", call_sid=call_sid, stream_sid=stream_sid)
 
                         elif event_type == "media":
                             audio_append = {
@@ -107,10 +108,10 @@ async def call(twilio_ws:WebSocket):
                             }
                             await openai_ws.send(json.dumps(audio_append))
                         elif event_type == "stop":
-                            print("Twilio Media Stream connection ended")
+                            logger.info("call_ended", call_sid=call_sid, stream_sid=stream_sid)
 
                 except Exception as e:
-                    print(f"Twilio error: {e}")
+                    logger.error("twilio_receive_error", call_sid=call_sid, error=str(e))
 
             async def receive_from_openai():
                 nonlocal reply_task
@@ -120,19 +121,20 @@ async def call(twilio_ws:WebSocket):
                            event = json.loads(raw_msg)
                            event_type = event.get("type")
                            if event_type == "input_audio_buffer.speech_started":
-                                print(f"[Event] Speech started: call_sid {call_sid}")
+                                logger.info("speech_started", call_sid=call_sid)
                                 if reply_task and not reply_task.done():
-                                    print(f"[Event] Speech interrupted: call_sid {call_sid}")
+                                    logger.info("speech_interrupted", call_sid=call_sid)
                                     reply_task.cancel()
                                     await twilio_ws.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
                            elif event_type == "input_audio_buffer.speech_stopped":
-                                print(f"[Event] Speech stopped: call_sid {call_sid}")
+                                logger.info("speech_stopped", call_sid=call_sid)
                            elif event_type == "conversation.item.input_audio_transcription.completed":
+                                logger.info("transcript_received", call_sid=call_sid)
                                 reply_task = asyncio.create_task(generate_and_play_reply(event["transcript"],stream_sid=stream_sid))
 
                 except Exception as e:
-                    print(f"OpenAI error: {e}")
-            
+                    logger.error("openai_receive_error", call_sid=call_sid, error=str(e))
+
             await asyncio.gather(receive_from_twilio(), receive_from_openai())
         finally:
-                print("Cleaned up call resources")
+                logger.info("call_cleanup", call_sid=call_sid)

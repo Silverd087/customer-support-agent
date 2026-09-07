@@ -6,6 +6,7 @@ import requests
 import hashlib
 import hmac
 import json
+from logger import logger
 
 router = APIRouter()
 
@@ -46,6 +47,7 @@ async def receive_message(request: Request):
     signature = request.headers.get("X-Hub-Signature-256")
 
     if not verify_meta_signature(raw_body, signature, settings.app_secret):
+        logger.warning("whatsapp_invalid_signature")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid request signature"
@@ -57,6 +59,7 @@ async def receive_message(request: Request):
         last_message = messages[-1]["text"]["body"]
         phone_number_id = value["metadata"]["phone_number_id"]
         phone_number = messages[-1]["from"]
+        logger.info("whatsapp_message_received", phone_number=phone_number, message_id=messages[-1]["id"])
         idempotency_key = last_message["id"]
         result = handle_incoming(last_message,thread_id=phone_number,channel="whatsapp")
 
@@ -82,10 +85,11 @@ async def receive_message(request: Request):
         }
         try:
             response = requests.post(url, headers=headers, json=post_payload)
+            logger.info("whatsapp_reply_sent", phone_number=phone_number, status_code=response.status_code)
         except Exception as e:
-            print(f"Error sending message to Whatsapp: {e}")
+            logger.error("whatsapp_send_failed", phone_number=phone_number, error=str(e))
 
     except (IndexError, KeyError) as e:
-        print(f"Error parsing payload or non-message event: {e}")
+        logger.error("whatsapp_payload_parse_failed", error=str(e))
 
     return {"status": "success"}        

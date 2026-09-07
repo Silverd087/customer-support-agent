@@ -8,6 +8,7 @@ import base64
 from bs4 import BeautifulSoup 
 from tenacity import retry,wait_exponential,stop_after_attempt,retry_if_exception_type
 from google.auth.exceptions import RefreshError
+from logger import logger
 
 
 
@@ -20,6 +21,7 @@ def get_gmail_service():
     creds = Credentials.from_authorized_user_file("gmail_token.json")
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
+        logger.info("gmail_token_refreshed")
         with open("gmail_token.json", "w") as f:
             f.write(creds.to_json())
     return build("gmail", "v1", credentials=creds)
@@ -99,18 +101,21 @@ def _extract_body(payload) -> str | None:
 def run_gmail_poller(interval_seconds: int = 30):
     while True:
         unread_messages = poll_gmail_for_new_messages()
+        if unread_messages:
+            logger.info("gmail_poll_cycle", unread_count=len(unread_messages))
         for msg in unread_messages:
             try:
                 payload = msg["payload"]
                 body = _extract_body(payload)
                 if not body:
-                    print(f"No readable text/plain or text/html part found on {msg['id']}, skipping.")
+                    logger.warning("gmail_message_unreadable", message_id=msg["id"])
                     continue
                 customer_email = next((header["value"] for header in payload["headers"] if header["name"].lower() == "from"), None)
                 text = customer_email + '\n\n' + body
                 handle_incoming(text, msg["threadId"], "email")
+                logger.info("gmail_message_processed", message_id=msg["id"], thread_id=msg["threadId"])
             except Exception as e:
-                print(f"Failed to process {msg["id"]}, left unread for retry: {e}")
+                logger.error("gmail_message_processing_failed", message_id=msg["id"], error=str(e))
                 continue
             mark_as_read(msg["id"])
         time.sleep(interval_seconds)

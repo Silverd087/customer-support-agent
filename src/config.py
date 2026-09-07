@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     elevenlabs_api_key:str
     db_user:str
     db_password:str
+    redis_url:str
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

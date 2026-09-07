@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode,tools_condition
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.postgres import PostgresSaver
-from sqlalchemy import create_engine,select,and_
+from sqlalchemy import create_engine,select,and_,update
 from database.models.order import Order
 from database.models.customer import Customer
 from database.models.pending_refund import PendingRefund
@@ -39,9 +39,13 @@ from sqlalchemy.exc import OperationalError, DBAPIError
 from google.auth.exceptions import RefreshError
 from sqlalchemy.dialects.postgresql import insert
 import hashlib
+from cache import redis_cache
+from logger import logger
 
 load_dotenv()
 
+EXPIRATION_TIME = 600
+RATE_LIMIT_THRESHOLD = 5
 ORCHESTRATOR_SYSTEM_PROMPT = """
 You are Lumen Home's customer support assistant. You have four tools available:
 
@@ -189,8 +193,10 @@ def critique(state:RagState):
     verdict = result.verdict
     feedback_text = result.feedback_text
     if verdict == "APPROVED":
+        logger.info("critique_verdict", verdict="approved", revision_count=state.get("revision_count",0))
         return {"critique_verdict":"APPROVED"}
     else:
+        logger.info("critique_verdict", verdict="revise", revision_count=state.get("revision_count",0)+1, feedback=feedback_text)
         return {"critique_verdict":"REVISE","revision_count":state.get("revision_count",0)+1,"messages":[HumanMessage(f"[Critique feedback — revise your previous answer]: {feedback_text}")]}
     
 def critique_condition(state:RagState):
@@ -238,6 +244,7 @@ def rag_specialist(question:str):
             confidence = msg.artifact.get("confidence") if hasattr(msg, "artifact") else None
 
     if confidence is not None and confidence < RAG_CONFIDENCE_THRESHOLD:
+        logger.warning("rag_low_confidence", question=question, confidence=confidence)
         return f"{answer}\n\n[LOW_CONFIDENCE: retrieval score {confidence:.2f}]"
     return answer
 
@@ -291,11 +298,15 @@ def create_refund_request(order_number: str, customer_email: str, reason: str) -
             if refund is None:
                 stmt = select(PendingRefund).where(PendingRefund.order_id == order.id, PendingRefund.reason == reason, PendingRefund.tenant_id == tenant_id)
                 refund = run_query_with_retry(lambda: db.execute(stmt).scalar_one_or_none())
+                logger.info("refund_request_deduped", refund_id=str(refund.id) if refund else None, order_number=order_number)
+            else:
+                logger.info("refund_request_created", refund_id=str(refund.id), order_number=order_number)
             refund_id = refund.id
             ref_info = f" (Refund ID: {refund_id})" if refund_id else ""
 
             return f"Refund request successfully submitted{ref_info} for order '{order_number}'."
     except Exception as e:
+        logger.error("refund_request_failed", order_number=order_number, error=str(e))
         return f"Failed to submit refund request: {str(e)}"
 
 @tool
@@ -408,10 +419,14 @@ def create_return_request(order_number, customer_email, product_name,reason):
             if order_return is None:
                 stmt = select(OrderReturn).where(OrderReturn.order_item_id == order_item.id, OrderReturn.reason == reason, OrderReturn.tenant_id == tenant_id)
                 order_return = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+                logger.info("return_request_deduped", return_id=str(order_return.id) if order_return else None, order_number=order_number, product_name=product_name)
+            else:
+                logger.info("return_request_created", return_id=str(order_return.id), order_number=order_number, product_name=product_name)
             return_id = order_return.id
 
             return f"Return request successfully submitted for product {product_name} for order '{order_number}' return id {return_id}."
     except Exception as e:
+        logger.error("return_request_failed", order_number=order_number, product_name=product_name, error=str(e))
         return f"Failed to submit order return request: {str(e)}"
 
 db_tools = [get_order_status,create_refund_request,get_subscription_status,get_warranty_claim_status,get_return_status,create_return_request]
@@ -487,10 +502,14 @@ def escalate_to_human(summary, reason,customer_email,channel) -> str:
             if escalation is None:
                 stmt = select(Escalation).where(Escalation.reason == reason, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id)
                 escalation = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+                logger.info("escalation_deduped", escalation_id=str(escalation.id) if escalation else None, reason=reason, channel=channel, thread_id=str(thread_id))
+            else:
+                logger.warning("escalation_created", escalation_id=str(escalation.id), reason=reason, channel=channel, thread_id=str(thread_id))
             escalation_id = escalation.id
 
             return f"Escalation request successfully submitted escalation id {escalation_id}"
     except Exception as e:
+        logger.error("escalation_failed", reason=reason, channel=channel, thread_id=str(thread_id), error=str(e))
         return f"Failed to escalate request to human agent: {str(e)}"
 
 
@@ -505,6 +524,7 @@ def get_gmail_headers():
     creds = Credentials.from_authorized_user_file("gmail_token.json")
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
+        logger.info("gmail_token_refreshed")
         with open("gmail_token.json", "w") as f:
             f.write(creds.to_json())
     return {"Authorization": f"Bearer {creds.token}"}
@@ -520,7 +540,7 @@ mcp_client = MultiServerMCPClient({
 all_gmail_tools =  asyncio.run(mcp_client.get_tools())
 all_gmail_tools_by_name = {tool.name: tool for tool in all_gmail_tools}
 @tool
-def create_draft(customer_email:str,subject:str,body:str,replyToMessageId:Optional[str]=None):
+def create_draft(customer_email:str,subject:str,body:str,reply_to_message_id:Optional[str]=None):
     """
     Create a draft reply email to a customer and queue it for human approval.
 
@@ -532,7 +552,7 @@ def create_draft(customer_email:str,subject:str,body:str,replyToMessageId:Option
         customer_email: The recipient's email address.
         subject: The subject line for the draft.
         body: The plain-text body of the draft.
-        replyToMessageId: The id of the message being replied to, if this
+        reply_to_message_id: The id of the message being replied to, if this
             draft is a reply within an existing thread (get it from
             search_threads/get_thread). Omit for a new, unthreaded email.
 
@@ -544,27 +564,34 @@ def create_draft(customer_email:str,subject:str,body:str,replyToMessageId:Option
         with get_db(write_engine) as db:
             create_draft_tool = all_gmail_tools_by_name.get("create_draft")
             if not create_draft_tool:
-                print("Available tools:", list(all_gmail_tools_by_name.keys()))
+                logger.error("gmail_create_draft_tool_missing", available_tools=list(all_gmail_tools_by_name.keys()))
                 return
             payload = {
                 "to":[customer_email],
                 "subject":subject,
                 "body":body,
             }
-            if replyToMessageId:
-                payload["replyToMessageId"] = replyToMessageId
+            if reply_to_message_id:
+                payload["replyToMessageId"] = reply_to_message_id
             else:
                 content = f"{subject}\0{body}".encode("utf-8")
-                replyToMessageId = hashlib.sha256(content).hexdigest()
-            response = create_draft_tool.invoke(payload)
-            insert_stmt = insert(PendingEmailSend).values(tenant_id=tenant_id,thread_id=thread_id,gmail_draft_id=response["id"],customer_email=customer_email,subject=subject,replyToMessageId = replyToMessageId).on_conflict_do_nothing(index_elements=["tenant_id","thread_id"]).returning(PendingEmailSend)
+                reply_to_message_id = hashlib.sha256(content).hexdigest()
+            insert_stmt = insert(PendingEmailSend).values(tenant_id=tenant_id,thread_id=thread_id,customer_email=customer_email,subject=subject,reply_to_message_id = reply_to_message_id).on_conflict_do_nothing(index_elements=["tenant_id","thread_id","reply_to_message_id"]).returning(PendingEmailSend)
             pending_email = run_query_with_retry(lambda: db.scalars(insert_stmt).one_or_none())
             db.commit()
             if pending_email is None:
-                stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.gmail_draft_id == response["id"], PendingEmailSend.customer_email == customer_email,PendingEmailSend.subject == subject)
+                stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id)
                 pending_email = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+                logger.info("draft_request_deduped", pending_email_id=str(pending_email.id) if pending_email else None, thread_id=str(thread_id))
+            else:
+                response = create_draft_tool.invoke(payload)
+                stmt = update(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id).values(gmail_draft_id=response["id"])
+                run_query_with_retry(lambda: db.execute(stmt))
+                db.commit()
+                logger.info("draft_created", pending_email_id=str(pending_email.id), gmail_draft_id=response["id"], customer_email=customer_email, thread_id=str(thread_id))
             return f"Email draft successfully submitted pending email id {pending_email.id}"
     except Exception as e:
+        logger.error("draft_creation_failed", customer_email=customer_email, thread_id=str(thread_id), error=str(e))
         return f"Failed to create email draft to customer: {str(e)}"
 
 
@@ -626,7 +653,18 @@ orchestrator_graph.add_edge("tools","agent")
 orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
 
 def handle_incoming(query:str,thread_id:str,channel:str):
+    key = f"ratelimit:{channel}:{thread_id}"
+    try:
+        count = redis_cache.incr(key)
+        if count == 1:
+            redis_cache.expire(key,EXPIRATION_TIME)
+        if count > RATE_LIMIT_THRESHOLD:
+            logger.warning("rate_limit_exceeded", channel=channel, thread_id=str(thread_id), count=count)
+            return "rate limit exceeded, wait a few minutes before making another request"
+    except Exception as e:
+        logger.error("redis_error", channel=channel, thread_id=str(thread_id), error=str(e))
     result = orchestrator.invoke({"messages":HumanMessage(query),"channel":channel},{"configurable": {"thread_id": thread_id}})
+    logger.info("turn_completed", channel=channel, thread_id=str(thread_id))
     return result["messages"][-1].text
 
 if __name__ == "__main__":
