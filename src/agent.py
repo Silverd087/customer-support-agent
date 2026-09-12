@@ -176,9 +176,13 @@ def search_knowledge_base(query: str):
 
 rag_llm = llm.bind_tools([search_knowledge_base])
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((DeadlineExceeded,ServiceUnavailable,httpx.ReadTimeout,httpx.ConnectError,httpx.RemoteProtocolError)))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((DeadlineExceeded,ServiceUnavailable)))
 def invoke_with_retry(llm, messages):
     return llm.invoke(messages)
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((httpx.ReadTimeout,httpx.ConnectError,httpx.RemoteProtocolError)))
+def call_create_draft_with_retry(gmail_tool,message):
+    return gmail_tool.invoke(message)
 
 def rag_agent_node(state: RagState):
     return {"messages":[invoke_with_retry(rag_llm,state["messages"])]}
@@ -585,7 +589,7 @@ def create_draft(customer_email:str,subject:str,body:str,reply_to_message_id:Opt
                 pending_email = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
                 logger.info("draft_request_deduped", pending_email_id=str(pending_email.id) if pending_email else None, thread_id=str(thread_id))
             else:
-                response = invoke_with_retry(create_draft_tool,payload)
+                response = call_create_draft_with_retry(create_draft_tool,payload)
                 stmt = update(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id).values(gmail_draft_id=response["id"])
                 run_query_with_retry(lambda: db.execute(stmt))
                 db.commit()

@@ -8,15 +8,16 @@ import hmac
 import json
 from logger import logger
 from tenacity import retry,retry_if_exception,wait_exponential_jitter,stop_after_attempt
-import httpx
-
+from requests.exceptions import ConnectionError,Timeout
 router = APIRouter()
 
 TRANSIENT_STATUS_CODES = {408, 429, 502, 503, 504}
 
 def is_transient_post_error(exc: BaseException):
-    if isinstance(exc,httpx.HTTPStatusError):
+    if isinstance(exc,requests.exceptions.HTTPError):
         return exc.response.status_code in TRANSIENT_STATUS_CODES
+    if isinstance(exc,(ConnectionError,Timeout)):
+        return True
     return False
 
 @retry(
@@ -102,7 +103,8 @@ async def receive_message(request: Request):
             }
         }
         try:
-            response = requests.post(url, headers=headers, json=post_payload)
+            response = call_post_request_with_retry(url,headers,post_payload)
+            response.raise_for_status()
             logger.info("whatsapp_reply_sent", phone_number=phone_number, status_code=response.status_code)
         except Exception as e:
             logger.error("whatsapp_send_failed", phone_number=phone_number, error=str(e))

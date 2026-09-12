@@ -43,8 +43,8 @@ def is_transient_websocket_error(exc:BaseException):
     stop=stop_after_attempt(4),
     reraise=True,
 )
-def websocket_connect_with_retry(url,headers):
-    return websockets.connect(url, additional_headers=headers)
+async def websocket_connect_with_retry(url,headers):
+    return await websockets.connect(url, additional_headers=headers)
 
 router = APIRouter()
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -75,7 +75,7 @@ async def call(twilio_ws:WebSocket):
     }
 
     try:
-        openai_ws = websocket_connect_with_retry(OPENAI_REALTIME_URL,headers)
+        openai_ws = await websocket_connect_with_retry(OPENAI_REALTIME_URL,headers)
         session_update = {
             "type": "session.update",
             "session": {
