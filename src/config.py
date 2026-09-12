@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     redis_url:str
     db_host:str
     db_name:str
+    domain:str
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

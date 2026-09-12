@@ -58,7 +58,7 @@ elevenlabs = AsyncElevenLabs(
 def incoming_call():
     response = VoiceResponse()
     connect = Connect()
-    connect.stream(url="wss://your-domain.ngrok-free.app/ws/call")
+    connect.stream(url=f"wss://{settings.domain}/ws/call")
     response.append(connect)
     return Response(content=str(response), media_type="application/xml")
 

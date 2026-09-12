@@ -135,13 +135,13 @@ vectorstore = Chroma(
     persist_directory="./chroma_langchain_db",
     embedding_function=embedding_model)
 
-write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@localhost/lumen_support"
+write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@{settings.db_host}/{settings.db_name}"
 write_engine = create_engine(url=write_url)
 
-read_url = f"postgresql+psycopg2://{settings.read_role_user}:{settings.read_role_password}@localhost/lumen_support"
+read_url = f"postgresql+psycopg2://{settings.read_role_user}:{settings.read_role_password}@{settings.db_host}/{settings.db_name}"
 read_engine = create_engine(url=read_url)
 
-db_uri = f"postgresql://{settings.db_user}:{settings.db_password}@localhost:5432/lumen_support"
+db_uri = f"postgresql://{settings.db_user}:{settings.db_password}@{settings.db_host}:5432/{settings.db_name}"
 pool = ConnectionPool(conninfo=db_uri, max_size=20, kwargs={"autocommit": True})
 checkpointer = PostgresSaver(pool)
 checkpointer.setup()

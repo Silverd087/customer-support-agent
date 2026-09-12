@@ -1,4 +1,4 @@
-from fastapi import APIRouter,Query,HTTPException,Request,status
+from fastapi import APIRouter,Query,HTTPException,Request,status,BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from config import settings
 from agent import handle_incoming
@@ -9,10 +9,11 @@ import json
 from logger import logger
 from tenacity import retry,retry_if_exception,wait_exponential_jitter,stop_after_attempt
 from requests.exceptions import ConnectionError,Timeout
+from cache import redis_cache
 router = APIRouter()
 
 TRANSIENT_STATUS_CODES = {408, 429, 502, 503, 504}
-
+EXPIRATION_TIME = 604800
 def is_transient_post_error(exc: BaseException):
     if isinstance(exc,requests.exceptions.HTTPError):
         return exc.response.status_code in TRANSIENT_STATUS_CODES
@@ -51,6 +52,35 @@ def verify_meta_signature(raw_body:bytes,signature:str | None,app_secret:str):
 
     return hmac.compare_digest(generated_signature,expected_signature)
 
+def agent_answer(last_message,phone_number,phone_number_id,idempotency_key):
+    try:
+        result = handle_incoming(last_message,thread_id=phone_number,channel="whatsapp")
+        url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
+
+        headers = {
+            "Authorization": f"Bearer {settings.whatsapp_access_token}",
+            "Content-Type": "application/json",
+            "Idempotency-Key": f"{idempotency_key}"
+            }
+
+        post_payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": phone_number,
+            "type": "text",
+            "text": {
+                "preview_url": False,
+                "body": result
+            }
+        }
+        try:
+            response = call_post_request_with_retry(url,headers,post_payload)
+            logger.info("whatsapp_reply_sent", phone_number=phone_number, status_code=response.status_code)
+        except Exception as e:
+            logger.error("whatsapp_send_failed", phone_number=phone_number, error=str(e))
+    except Exception as e:
+        logger.error("whatsapp_background_processing_failed", phone_number=phone_number, message_id=idempotency_key, error=str(e))
+
 @router.get("/webhook")
 async def verify_webhook(
     hub_mode:str = Query(None,alias="hub.mode"),
@@ -64,7 +94,7 @@ async def verify_webhook(
 
 
 @router.post("/webhook")
-async def receive_message(request: Request):
+async def receive_message(request: Request,background_task:BackgroundTasks):
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
 
@@ -83,35 +113,16 @@ async def receive_message(request: Request):
         phone_number = messages[-1]["from"]
         logger.info("whatsapp_message_received", phone_number=phone_number, message_id=messages[-1]["id"])
         idempotency_key = messages[-1]["id"]
-        result = handle_incoming(last_message,thread_id=phone_number,channel="whatsapp")
-
-
-
-        url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
-
-        headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
-        "Content-Type": "application/json",
-        "Idempotency-Key": f"{idempotency_key}"
-        }
-
-        post_payload = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": phone_number,
-            "type": "text",
-            "text": {
-                "preview_url": False,
-                "body": result
-            }
-        }
+        was_set = True
         try:
-            response = call_post_request_with_retry(url,headers,post_payload)
-            logger.info("whatsapp_reply_sent", phone_number=phone_number, status_code=response.status_code)
+            was_set = redis_cache.set(idempotency_key,1,nx=True,ex=EXPIRATION_TIME)
         except Exception as e:
-            logger.error("whatsapp_send_failed", phone_number=phone_number, error=str(e))
-
+            logger.error("whatsapp_dedup_check_failed", phone_number=phone_number, message_id=idempotency_key, error=str(e))
+        if was_set:
+            background_task.add_task(agent_answer,last_message=last_message,phone_number=phone_number,phone_number_id=phone_number_id,idempotency_key=idempotency_key)
+        else:
+            logger.info("whatsapp_duplicate_delivery_skipped", phone_number=phone_number, message_id=idempotency_key)
+        return {"status": "success"}
     except (IndexError, KeyError) as e:
         logger.error("whatsapp_payload_parse_failed", error=str(e))
 
-    return {"status": "success"}        
