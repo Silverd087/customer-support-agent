@@ -8,6 +8,43 @@ import websockets
 from config import settings
 from elevenlabs import AsyncElevenLabs,VoiceSettings
 from logger import logger
+from tenacity import retry,retry_if_exception,wait_exponential_jitter,stop_after_attempt
+from typing import Set
+from websockets.exceptions import (
+    InvalidHandshake,
+    WebSocketException,
+    InvalidStatus
+)
+
+TRANSIENT_HANDSHAKE_STATUSES: Set[int] = {
+    408,  # Request Timeout
+    429,  # Too Many Requests (Rate limit)
+    500,  # Internal Server Error
+    502,  # Bad Gateway
+    503,  # Service Unavailable
+    504,  # Gateway Timeout
+}
+
+def is_transient_websocket_error(exc:BaseException):
+    if isinstance(exc,(OSError,ConnectionRefusedError,ConnectionResetError,TimeoutError)):
+        return True
+    if isinstance(exc,(InvalidHandshake)):
+        return True
+    if isinstance(exc,InvalidStatus):
+        return exc.response.status_code in TRANSIENT_HANDSHAKE_STATUSES
+    if isinstance(exc, WebSocketException):
+        exc_name = type(exc).__name__
+        return any(k in exc_name for k in ("Timeout", "Reset", "Aborted"))
+    return False
+
+@retry(
+    retry=retry_if_exception(is_transient_websocket_error),
+    wait=wait_exponential_jitter(initial=1, max=10, jitter=1),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
+def websocket_connect_with_retry(url,headers):
+    return websockets.connect(url, additional_headers=headers)
 
 router = APIRouter()
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -37,7 +74,8 @@ async def call(twilio_ws:WebSocket):
         "OpenAI-Beta": "realtime=v1"
     }
 
-    async with websockets.connect(OPENAI_REALTIME_URL, additional_headers=headers) as openai_ws:
+    try:
+        openai_ws = websocket_connect_with_retry(OPENAI_REALTIME_URL,headers)
         session_update = {
             "type": "session.update",
             "session": {
@@ -138,3 +176,5 @@ async def call(twilio_ws:WebSocket):
             await asyncio.gather(receive_from_twilio(), receive_from_openai())
         finally:
                 logger.info("call_cleanup", call_sid=call_sid)
+    finally:
+        openai_ws.connection.close()

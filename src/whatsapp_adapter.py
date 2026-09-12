@@ -17,6 +17,7 @@ TRANSIENT_STATUS_CODES = {408, 429, 502, 503, 504}
 def is_transient_post_error(exc: BaseException):
     if isinstance(exc,httpx.HTTPStatusError):
         return exc.response.status_code in TRANSIENT_STATUS_CODES
+    return False
 
 @retry(
     retry=retry_if_exception(is_transient_post_error),
