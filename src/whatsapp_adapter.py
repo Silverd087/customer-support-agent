@@ -7,8 +7,25 @@ import hashlib
 import hmac
 import json
 from logger import logger
+from tenacity import retry,retry_if_exception,wait_exponential_jitter,stop_after_attempt
+import httpx
 
 router = APIRouter()
+
+TRANSIENT_STATUS_CODES = {408, 429, 502, 503, 504}
+
+def is_transient_post_error(exc: BaseException):
+    if isinstance(exc,httpx.HTTPStatusError):
+        return exc.response.status_code in TRANSIENT_STATUS_CODES
+
+@retry(
+    retry=retry_if_exception(is_transient_post_error),
+    wait=wait_exponential_jitter(initial=1, max=10, jitter=1),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
+def call_post_request_with_retry(url,headers,post_payload):
+    return requests.post(url, headers=headers, json=post_payload)
 
 def verify_meta_signature(raw_body:bytes,signature:str | None,app_secret:str):
     if not signature:
