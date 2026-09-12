@@ -27,7 +27,10 @@ def is_transient_post_error(exc: BaseException):
     reraise=True,
 )
 def call_post_request_with_retry(url,headers,post_payload):
-    return requests.post(url, headers=headers, json=post_payload)
+    response = requests.post(url, headers=headers, json=post_payload)
+    response.raise_for_status()
+    return response
+
 
 def verify_meta_signature(raw_body:bytes,signature:str | None,app_secret:str):
     if not signature:
@@ -104,7 +107,6 @@ async def receive_message(request: Request):
         }
         try:
             response = call_post_request_with_retry(url,headers,post_payload)
-            response.raise_for_status()
             logger.info("whatsapp_reply_sent", phone_number=phone_number, status_code=response.status_code)
         except Exception as e:
             logger.error("whatsapp_send_failed", phone_number=phone_number, error=str(e))

@@ -68,6 +68,7 @@ async def call(twilio_ws:WebSocket):
     stream_sid = None
     call_sid = None
     reply_task = None
+    openai_ws = None
 
     headers = {
         "Authorization": f"Bearer {settings.openai_api_key}",
@@ -177,4 +178,5 @@ async def call(twilio_ws:WebSocket):
         finally:
                 logger.info("call_cleanup", call_sid=call_sid)
     finally:
-        openai_ws.connection.close()
+        if openai_ws:
+            await openai_ws.close()
