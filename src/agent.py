@@ -41,6 +41,7 @@ from sqlalchemy.dialects.postgresql import insert
 import hashlib
 from cache import redis_cache
 from logger import logger
+import httpx
 
 load_dotenv()
 
@@ -175,7 +176,7 @@ def search_knowledge_base(query: str):
 
 rag_llm = llm.bind_tools([search_knowledge_base])
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((DeadlineExceeded,ServiceUnavailable)))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((DeadlineExceeded,ServiceUnavailable,httpx.ReadTimeout,httpx.ConnectError,httpx.RemoteProtocolError)))
 def invoke_with_retry(llm, messages):
     return llm.invoke(messages)
 
@@ -584,7 +585,7 @@ def create_draft(customer_email:str,subject:str,body:str,reply_to_message_id:Opt
                 pending_email = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
                 logger.info("draft_request_deduped", pending_email_id=str(pending_email.id) if pending_email else None, thread_id=str(thread_id))
             else:
-                response = create_draft_tool.invoke(payload)
+                response = invoke_with_retry(create_draft_tool,payload)
                 stmt = update(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id).values(gmail_draft_id=response["id"])
                 run_query_with_retry(lambda: db.execute(stmt))
                 db.commit()
