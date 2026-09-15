@@ -23,9 +23,7 @@ from database.models.tenant import Tenant
 from database.models.payment import Payment
 from database.models.escalation import Escalation
 from uuid import UUID,uuid4
-from google.auth.transport.requests import Request
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from google.oauth2.credentials import Credentials
 from database.models.pending_email_send import PendingEmailSend
 import asyncio
 from typing import Optional
@@ -42,7 +40,7 @@ import hashlib
 from cache import redis_cache
 from logger import logger
 import httpx
-
+from gmail_credentials import get_gmail_headers,get_gmail_service
 load_dotenv()
 
 EXPIRATION_TIME = 600
@@ -525,14 +523,6 @@ def get_email_with_retry(service,id):
         ).execute()
 
 
-def get_gmail_headers():
-    creds = Credentials.from_authorized_user_file("gmail_token.json")
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        logger.info("gmail_token_refreshed")
-        with open("gmail_token.json", "w") as f:
-            f.write(creds.to_json())
-    return {"Authorization": f"Bearer {creds.token}"}
 
 mcp_client = MultiServerMCPClient({
     "gmail": {

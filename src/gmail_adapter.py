@@ -1,30 +1,11 @@
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
+
 import time
 from agent import handle_incoming
-from langchain.messages import HumanMessage
 import base64
 from bs4 import BeautifulSoup 
-from tenacity import retry,wait_exponential,stop_after_attempt,retry_if_exception_type
-from google.auth.exceptions import RefreshError
+from tenacity import retry,wait_exponential,stop_after_attempt
 from logger import logger
-
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),retry=retry_if_exception_type(RefreshError))
-def get_gmail_service():
-    """Same gmail_token.json the specialist uses — sending only needs
-    gmail.compose, which is already granted, so no separate credential
-    is required. See the write-up on why this can't be scope-restricted
-    further: gmail.compose bundles draft creation and send together."""
-    creds = Credentials.from_authorized_user_file("gmail_token.json")
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        logger.info("gmail_token_refreshed")
-        with open("gmail_token.json", "w") as f:
-            f.write(creds.to_json())
-    return build("gmail", "v1", credentials=creds)
+from gmail_credentials import get_gmail_service
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
 def list_emails_with_retry(service):

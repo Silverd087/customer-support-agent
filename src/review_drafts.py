@@ -33,23 +33,12 @@ from database.models.product import Product
 from database.models.warranty_claim import WarrantyClaim
 from database.models.subscription import Subscription
 from database.models.escalation import Escalation
+from gmail_credentials import get_gmail_service
 
 review_url = f"postgresql+psycopg2://{settings.human_reviewer_role_user}:{settings.human_reviewer_role_password}@localhost/lumen_support"
 review_engine = create_engine(url=review_url)
 SessionLocal = sessionmaker(bind=review_engine, expire_on_commit=False)
 
-
-def get_gmail_service():
-    """Same gmail_token.json the specialist uses — sending only needs
-    gmail.compose, which is already granted, so no separate credential
-    is required. See the write-up on why this can't be scope-restricted
-    further: gmail.compose bundles draft creation and send together."""
-    creds = Credentials.from_authorized_user_file("gmail_token.json")
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        with open("gmail_token.json", "w") as f:
-            f.write(creds.to_json())
-    return build("gmail", "v1", credentials=creds)
 
 
 def fetch_pending(db):
