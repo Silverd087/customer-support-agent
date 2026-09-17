@@ -1,13 +1,16 @@
-import os
-from google.auth.transport.requests import Request
+import json
+
 from google.auth.exceptions import RefreshError
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from database.session import get_db
-from config import settings
-from sqlalchemy import create_engine
-from database.models.oauth_credentials import OauthCredentials
+from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import insert
+
+import database.models  # noqa: F401
+from config import settings
+from database.models.oauth_credentials import OauthCredentials
+from database.session import get_db
 
 write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@{settings.db_host}/{settings.db_name}"
 write_engine = create_engine(url=write_url)
@@ -17,16 +20,16 @@ CREDENTIALS_PATH = 'client_secret.json'
 
 def get_credentials():
     creds = None
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    with get_db(write_engine) as db:
+        stmt = select(OauthCredentials).where(OauthCredentials.provider == "GOOGLE")
+        creds_row = db.execute(stmt).scalar_one_or_none()
+        creds = Credentials.from_authorized_user_info(creds_row.token_json) if creds_row else None
         
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
             except RefreshError:
-                if os.path.exists(TOKEN_PATH):
-                    os.remove(TOKEN_PATH)
                 creds = None
 
         if not creds:
@@ -35,12 +38,13 @@ def get_credentials():
 
         with get_db(write_engine) as db:
             stmt = insert(OauthCredentials).values(
-                provider="GOOGLE",token_json=creds.to_json()
+                provider="GOOGLE",token_json=json.loads(creds.to_json())
                 ).on_conflict_do_update(
-                    index_elements=["provider"],set_={"token_json":creds.to_json()}
+                    index_elements=["provider"],set_={"token_json":json.loads(creds.to_json())}
                     )
             db.execute(stmt)
             db.commit()
     return creds
 
-get_credentials()
+if __name__ == "__main__":
+    get_credentials()

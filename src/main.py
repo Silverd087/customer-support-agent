@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+
 from whatsapp_adapter import router
 
 app = FastAPI()

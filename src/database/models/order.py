@@ -1,10 +1,20 @@
-from database.models.base import Base
-from sqlalchemy.orm import mapped_column,Mapped,relationship
-from sqlalchemy import UUID,String,DateTime,ForeignKey,Enum,Text,func,Integer,UniqueConstraint
-from datetime import datetime
 import enum
-from typing import Optional
 import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    UUID,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database.models.base import Base
 
 
 class Status(enum.Enum):
@@ -30,11 +40,11 @@ class Order(Base):
     customer_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id"),nullable=False)
     status:Mapped[Status] = mapped_column(Enum(Status,name="order_status",values_callable=lambda e: [x.value for x in e]))
     shipping_method:Mapped[ShippingMethod] = mapped_column(Enum(ShippingMethod,name="order_shipping_method",values_callable=lambda e: [x.value for x in e]))
-    tracking_number:Mapped[Optional[str]] = mapped_column(String(10))
+    tracking_number:Mapped[str | None] = mapped_column(String(10))
     placed_at:Mapped[datetime] = mapped_column(DateTime(timezone=True),server_default=func.now())
-    shipped_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
-    delivered_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
-    eta_date:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
+    shipped_at:Mapped[datetime | None] = mapped_column(DateTime(timezone=True),nullable=True)
+    delivered_at:Mapped[datetime | None] = mapped_column(DateTime(timezone=True),nullable=True)
+    eta_date:Mapped[datetime | None] = mapped_column(DateTime(timezone=True),nullable=True)
     total_cents:Mapped[int] = mapped_column(Integer)
     tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)
 

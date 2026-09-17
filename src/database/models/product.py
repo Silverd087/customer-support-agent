@@ -1,8 +1,18 @@
-from database.models.base import Base
-from sqlalchemy.orm import mapped_column,Mapped,relationship
-import uuid
-from sqlalchemy import UUID,String,Enum,Integer,Boolean,ForeignKey,UniqueConstraint
 import enum
+import uuid
+
+from sqlalchemy import (
+    UUID,
+    Boolean,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database.models.base import Base
 
 
 class Category(enum.Enum):

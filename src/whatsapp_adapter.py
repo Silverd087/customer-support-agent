@@ -1,15 +1,23 @@
-from fastapi import APIRouter,Query,HTTPException,Request,status,BackgroundTasks
-from fastapi.responses import PlainTextResponse
-from config import settings
-from agent import handle_incoming
-import requests
 import hashlib
 import hmac
 import json
-from logger import logger
-from tenacity import retry,retry_if_exception,wait_exponential_jitter,stop_after_attempt
-from requests.exceptions import ConnectionError,Timeout
+
+import requests
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse
+from requests.exceptions import ConnectionError, Timeout
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
+
 from cache import redis_cache
+from config import settings
+from logger import logger
+from orchestrator import handle_incoming
+
 router = APIRouter()
 
 TRANSIENT_STATUS_CODES = {408, 429, 502, 503, 504}
@@ -52,9 +60,9 @@ def verify_meta_signature(raw_body:bytes,signature:str | None,app_secret:str):
 
     return hmac.compare_digest(generated_signature,expected_signature)
 
-def agent_answer(last_message,phone_number,phone_number_id,idempotency_key):
+async def agent_answer(last_message,phone_number,phone_number_id,idempotency_key):
     try:
-        result = handle_incoming(last_message,thread_id=phone_number,channel="whatsapp")
+        result = await handle_incoming(last_message,thread_id=phone_number,channel="whatsapp")
         url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
 
         headers = {

@@ -179,3 +179,17 @@ CREATE TABLE pending_email_sends (
 );
 CREATE INDEX idx_pending_email_sends_tenant ON pending_email_sends(tenant_id);
 CREATE INDEX idx_pending_email_sends_tenant_status ON pending_email_sends(tenant_id, status);
+
+-- OAuth credentials for external integrations (currently just Gmail),
+-- stored in Postgres instead of a local gmail_token.json file so every
+-- pod/replica reads and refreshes the same token — a local file can't do
+-- that safely under Kubernetes (Secret-mounted volumes are read-only, and
+-- multiple replicas would each drift out of sync with their own stale
+-- copy). Deliberately NOT tenant-scoped: this is the business's own single
+-- Gmail account, not per-customer data, so no tenant_id and no RLS policy
+-- here, unlike every table above.
+CREATE TABLE oauth_credentials (
+    provider    TEXT PRIMARY KEY,      -- e.g. 'GOOGLE' — one row per provider
+    token_json  JSONB NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -1,9 +1,12 @@
-from database.models.base import Base
-from sqlalchemy.orm import mapped_column,Mapped,relationship
-import uuid
-from sqlalchemy import UUID,ForeignKey,Enum,DateTime,Text,func
 import enum
+import uuid
 from datetime import datetime
+
+from sqlalchemy import UUID, DateTime, Enum, ForeignKey, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database.models.base import Base
+
 
 class Status(enum.Enum):
     SUBMITTED = "submitted"

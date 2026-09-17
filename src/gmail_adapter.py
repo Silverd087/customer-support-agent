@@ -1,11 +1,15 @@
 
-import time
-from agent import handle_incoming
+import asyncio
 import base64
-from bs4 import BeautifulSoup 
-from tenacity import retry,wait_exponential,stop_after_attempt
-from logger import logger
+import time
+
+from bs4 import BeautifulSoup
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from gmail_credentials import get_gmail_service
+from logger import logger
+from orchestrator import handle_incoming
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
 def list_emails_with_retry(service):
@@ -21,7 +25,7 @@ def get_email_with_retry(service,id):
         ).execute()
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
-def mark_as_read_with_retry(service):
+def mark_as_read_with_retry(service,id):
     service.users().messages().modify(
         userId="me",
         id=id,
@@ -36,12 +40,12 @@ def poll_gmail_for_new_messages():
     messages_ids = results.get('messages', [])
     messages = []
     for msg in messages_ids:
-        message = get_email_with_retry(service,msg['id'])
+        messages.append(get_email_with_retry(service,msg['id']))
     return messages
 
 def mark_as_read(id:str):
     service = get_gmail_service()
-    mark_as_read_with_retry(service)
+    mark_as_read_with_retry(service,id)
 
 def _extract_body(payload) -> str | None:
     """Walk a Gmail message payload for its text content.
@@ -93,7 +97,7 @@ def run_gmail_poller(interval_seconds: int = 30):
                     continue
                 customer_email = next((header["value"] for header in payload["headers"] if header["name"].lower() == "from"), None)
                 text = customer_email + '\n\n' + body
-                handle_incoming(text, msg["threadId"], "email")
+                asyncio.run(handle_incoming(text, msg["threadId"], "email"))
                 logger.info("gmail_message_processed", message_id=msg["id"], thread_id=msg["threadId"])
             except Exception as e:
                 logger.error("gmail_message_processing_failed", message_id=msg["id"], error=str(e))

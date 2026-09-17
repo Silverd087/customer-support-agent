@@ -1,7 +1,9 @@
-from database.models.base import Base
-from sqlalchemy.orm import mapped_column,Mapped,relationship
 import uuid
-from sqlalchemy import UUID,ForeignKey,Integer
+
+from sqlalchemy import UUID, ForeignKey, Integer
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database.models.base import Base
 
 
 class OrderItem(Base):

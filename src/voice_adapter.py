@@ -1,22 +1,24 @@
-from fastapi import APIRouter,WebSocket,Response,WebSocketDisconnect
-from twilio.twiml.voice_response import Connect, VoiceResponse
-import json
-import base64
-from agent import handle_incoming
 import asyncio
-import websockets
-from config import settings
-from elevenlabs import AsyncElevenLabs,VoiceSettings
-from logger import logger
-from tenacity import retry,retry_if_exception,wait_exponential_jitter,stop_after_attempt
-from typing import Set
-from websockets.exceptions import (
-    InvalidHandshake,
-    WebSocketException,
-    InvalidStatus
-)
+import base64
+import json
 
-TRANSIENT_HANDSHAKE_STATUSES: Set[int] = {
+import websockets
+from elevenlabs import AsyncElevenLabs, VoiceSettings
+from fastapi import APIRouter, Response, WebSocket
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
+from twilio.twiml.voice_response import Connect, VoiceResponse
+from websockets.exceptions import InvalidHandshake, InvalidStatus, WebSocketException
+
+from config import settings
+from logger import logger
+from orchestrator import handle_incoming
+
+TRANSIENT_HANDSHAKE_STATUSES: set[int] = {
     408,  # Request Timeout
     429,  # Too Many Requests (Rate limit)
     500,  # Internal Server Error
@@ -100,7 +102,7 @@ async def call(twilio_ws:WebSocket):
         await openai_ws.send(json.dumps(session_update))
         try:
             async def generate_and_play_reply(transcript, stream_sid):
-                result = await asyncio.to_thread(handle_incoming,transcript,stream_sid,"voice")
+                result = await handle_incoming(transcript,stream_sid,"voice")
                 audio_response = elevenlabs.text_to_speech.stream(
                     voice_id="pNInz6obpgDQGcFmaJgB",
                     output_format="ulaw_8000",

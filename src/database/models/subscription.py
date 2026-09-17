@@ -1,10 +1,11 @@
-from database.models.base import Base
-from sqlalchemy.orm import mapped_column,Mapped,relationship
-import uuid
-from sqlalchemy import UUID,DateTime,ForeignKey,Enum
 import enum
-from typing import Optional
+import uuid
 from datetime import datetime
+
+from sqlalchemy import UUID, DateTime, Enum, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database.models.base import Base
 
 
 class Plan(enum.Enum):
@@ -27,9 +28,9 @@ class Subscription(Base):
     plan:Mapped[Plan] = mapped_column(Enum(Plan,name="subscription_plan",values_callable=lambda e: [x.value for x in e]))
     billing_cycle:Mapped[BillingCycle] = mapped_column(Enum(BillingCycle,name="subscription_billing_cycle",values_callable=lambda e: [x.value for x in e]))
     status:Mapped[Status] = mapped_column(Enum(Status,name="subscription_status",values_callable=lambda e: [x.value for x in e]))
-    current_period_start:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
-    current_period_end:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
-    cancelled_at:Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),nullable=True)
+    current_period_start:Mapped[datetime | None] = mapped_column(DateTime(timezone=True),nullable=True)
+    current_period_end:Mapped[datetime | None] = mapped_column(DateTime(timezone=True),nullable=True)
+    cancelled_at:Mapped[datetime | None] = mapped_column(DateTime(timezone=True),nullable=True)
     tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)
 
 

@@ -1,12 +1,14 @@
-from langchain_classic.document_loaders import DirectoryLoader, TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_anthropic import ChatAnthropic
-from config import settings
-from pydantic import BaseModel, Field
 from typing import Literal
+
+from langchain_anthropic import ChatAnthropic
+from langchain_chroma import Chroma
+from langchain_classic.document_loaders import DirectoryLoader, TextLoader
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pydantic import BaseModel, Field
+
+from config import settings
 
 llm = ChatAnthropic(api_key=settings.anthropic_api_key,model="claude-haiku-4-5-20251001")
 prompt = ChatPromptTemplate.from_messages([

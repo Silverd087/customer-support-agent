@@ -1,9 +1,11 @@
-from database.models.base import Base
-from sqlalchemy.orm import mapped_column,Mapped,relationship
 import uuid
-from sqlalchemy import UUID,String,DateTime,ForeignKey,func,UniqueConstraint
-from typing import Optional
 from datetime import datetime
+
+from sqlalchemy import UUID, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database.models.base import Base
+
 
 class Customer(Base):
     __tablename__ = "customers"
@@ -13,7 +15,7 @@ class Customer(Base):
     id:Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     email:Mapped[str] = mapped_column(String(100))
     full_name:Mapped[str] = mapped_column(String(100))
-    household_id:Mapped[Optional[uuid.UUID]] =  mapped_column(ForeignKey("customers.id"),nullable=True)
+    household_id:Mapped[uuid.UUID | None] =  mapped_column(ForeignKey("customers.id"),nullable=True)
     created_at:Mapped[datetime] = mapped_column(DateTime(timezone=True),server_default=func.now())
     tenant_id:Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"),nullable=False)
 

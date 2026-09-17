@@ -12,31 +12,16 @@ Run: uv run python src/review_drafts.py
 """
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from config import settings
+import database.models  # noqa: F401
+from database.engines import review_engine
 from database.models.pending_email_send import PendingEmailSend, Status
-from database.models.tenant import Tenant
-from database.models.customer import Customer
-from database.models.order_item import OrderItem
-from database.models.order_return import OrderReturn
-from database.models.order import Order
-from database.models.payment import Payment
-from database.models.pending_refund import PendingRefund
-from database.models.product import Product
-from database.models.warranty_claim import WarrantyClaim
-from database.models.subscription import Subscription
-from database.models.escalation import Escalation
 from gmail_credentials import get_gmail_service
 
-review_url = f"postgresql+psycopg2://{settings.human_reviewer_role_user}:{settings.human_reviewer_role_password}@localhost/lumen_support"
-review_engine = create_engine(url=review_url)
 SessionLocal = sessionmaker(bind=review_engine, expire_on_commit=False)
 
 
@@ -99,16 +84,16 @@ def main():
                     print(f"Failed to send via Gmail API — row left as pending_review: {e}")
                     continue
                 draft.status = Status.SENT
-                draft.sent_at = datetime.now(timezone.utc)
+                draft.sent_at = datetime.now(UTC)
                 draft.reviewed_by = reviewer
-                draft.reviewed_at = datetime.now(timezone.utc)
+                draft.reviewed_at = datetime.now(UTC)
                 db.commit()
                 print("Sent and marked 'sent'.")
 
             elif choice == "r":
                 draft.status = Status.REJECTED
                 draft.reviewed_by = reviewer
-                draft.reviewed_at = datetime.now(timezone.utc)
+                draft.reviewed_at = datetime.now(UTC)
                 db.commit()
                 print("Marked 'rejected' — draft left unsent in Gmail.")
 

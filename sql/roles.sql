@@ -41,6 +41,14 @@ GRANT INSERT ON escalations TO agent_refund_writer;
 -- human", not just a prompt instruction.
 GRANT INSERT ON pending_email_sends TO agent_refund_writer;
 
+-- oauth_credentials: backs gmail_credentials.py and token_generator.py,
+-- both of which connect as this same role. Needs SELECT (read the current
+-- token), INSERT (first-time bootstrap), and UPDATE (persist a refreshed
+-- token) — unlike the grants above, this one includes UPDATE, since
+-- refreshing your own service account's credentials has no separate
+-- human-approval step the way customer-facing writes do.
+GRANT SELECT, INSERT, UPDATE ON oauth_credentials TO agent_refund_writer;
+
 -- The human-driven approval process — deliberately NOT used by any LLM
 -- tool. Whatever small script/endpoint a person runs to review and
 -- approve/reject pending drafts connects as this role, not as
