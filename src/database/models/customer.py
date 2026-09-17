@@ -1,15 +1,18 @@
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
+
 from sqlalchemy import UUID, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from database.models.order import Order
-    from database.models.subscription import Subscription
     from database.models.payment import Payment
+    from database.models.subscription import Subscription
     from database.models.tenant import Tenant
 
 from database.models.base import Base
+
 
 class Customer(Base):
     __tablename__ = "customers"

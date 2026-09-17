@@ -21,6 +21,9 @@ from logger import logger
 write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@{settings.db_host}/{settings.db_name}"
 write_engine = create_engine(url=write_url)
 
+class GmailCredentialsNotFound(Exception):
+    """Raised when no oauth_credentials row exists yet for a given provider."""
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),retry=retry_if_exception_type(RefreshError))
 def get_gmail():
     creds = None
@@ -29,7 +32,7 @@ def get_gmail():
         creds_row = db.execute(stmt).scalar_one_or_none()
         if not creds_row:
             logger.info("gmail_token_not_found")
-            raise Exception("token not found")
+            raise GmailCredentialsNotFound("No Gmail credentials found in oauth_credentials — run token_generator.py to bootstrap")
         logger.info("gmail_token_fetched")
         creds = Credentials.from_authorized_user_info(creds_row.token_json)
     if creds and creds.expired and creds.refresh_token:

@@ -1,5 +1,6 @@
 import enum
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     UUID,
@@ -13,7 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.models.base import Base
-from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from database.models.order_item import OrderItem
     from database.models.tenant import Tenant

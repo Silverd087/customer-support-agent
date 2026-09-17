@@ -1,24 +1,25 @@
 import enum
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import UUID, DateTime, Enum, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.models.base import Base
-from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
-    from database.models.order import Order
-    from database.models.subscription import Subscription
-    from database.models.payment import Payment
-    from database.models.order_item import OrderItem
     from database.models.customer import Customer
+    from database.models.escalation import Escalation
+    from database.models.order import Order
+    from database.models.order_item import OrderItem
     from database.models.order_return import OrderReturn
+    from database.models.payment import Payment
+    from database.models.pending_email_send import PendingEmailSend
     from database.models.pending_refund import PendingRefund
     from database.models.product import Product
+    from database.models.subscription import Subscription
     from database.models.warranty_claim import WarrantyClaim
-    from database.models.escalation import Escalation
-    from database.models.pending_email_send import PendingEmailSend
 
 class Plan(enum.Enum):
     TRIAL = "trial"
