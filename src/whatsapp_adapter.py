@@ -25,9 +25,8 @@ EXPIRATION_TIME = 604800
 def is_transient_post_error(exc: BaseException):
     if isinstance(exc,requests.exceptions.HTTPError):
         return exc.response.status_code in TRANSIENT_STATUS_CODES
-    if isinstance(exc,(ConnectionError,Timeout)):
-        return True
-    return False
+    return isinstance(exc,(ConnectionError,Timeout))
+
 
 @retry(
     retry=retry_if_exception(is_transient_post_error),
