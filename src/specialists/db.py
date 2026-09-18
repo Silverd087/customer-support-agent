@@ -12,7 +12,6 @@ from sqlalchemy.dialects.postgresql import insert
 from config import settings
 from database.engines import read_engine, write_engine
 from database.models.customer import Customer
-from database.models.escalation import Escalation
 from database.models.order import Order
 from database.models.order_item import OrderItem
 from database.models.order_return import OrderReturn
@@ -209,49 +208,8 @@ def create_return_request(order_number, customer_email, product_name,reason):
         logger.error("return_request_failed", order_number=order_number, product_name=product_name, error=str(e))
         return f"Failed to submit order return request: {e!s}"
 
-@tool
-def escalate_to_human(summary, reason,customer_email,channel) -> str:
-    """
-    Escalate the current conversation to a human support agent.
 
-    Use this when the customer explicitly asks for a human, when the RAG
-    specialist reports low or no confidence in its answer, or when the
-    request involves account security, safety, or suspected fraud.
-
-    Args:
-        summary: A concise summary, in your own words, of what the customer
-            wants and any relevant context (order numbers, what's already
-            been checked) — written for a human picking this up cold.
-        reason: Why this is being escalated. Must be one of:
-            'customer_requested', 'low_confidence', 'security_sensitive'.
-        customer_email: The customer's email if known, otherwise None.
-        channel: The channel this conversation is happening on. Must be
-            one of: 'web', 'whatsapp', 'email', 'voice'.
-
-    Returns:
-        str: A confirmation message with the escalation reference id,
-             or an error message if the escalation could not be logged.
-    """
-    try:
-        with get_db(write_engine) as db:
-            insert_stmt = insert(Escalation).values(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=tenant_id,thread_id=thread_id).on_conflict_do_nothing(index_elements=["tenant_id","reason","thread_id"]).returning(Escalation)
-            escalation = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
-            db.commit()
-            if escalation is None:
-                select_stmt = select(Escalation).where(Escalation.reason == reason, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id)
-                escalation = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
-                logger.info("escalation_deduped", escalation_id=str(escalation.id) if escalation else None, reason=reason, channel=channel, thread_id=str(thread_id))
-            else:
-                logger.warning("escalation_created", escalation_id=str(escalation.id), reason=reason, channel=channel, thread_id=str(thread_id))
-            escalation_id = escalation.id
-
-            return f"Escalation request successfully submitted escalation id {escalation_id}"
-    except Exception as e:
-        logger.error("escalation_failed", reason=reason, channel=channel, thread_id=str(thread_id), error=str(e))
-        return f"Failed to escalate request to human agent: {e!s}"
-
-
-db_tools = [get_order_status,create_refund_request,get_subscription_status,get_warranty_claim_status,get_return_status,create_return_request,escalate_to_human]
+db_tools = [get_order_status,create_refund_request,get_subscription_status,get_warranty_claim_status,get_return_status,create_return_request]
 db_llm = llm.bind_tools(db_tools)
 def db_agent_node(state: MessagesState):
     return {"messages":[invoke_with_retry(db_llm,state["messages"])]}
@@ -263,7 +221,7 @@ db_graph.add_edge(START,"agent")
 db_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
 db_graph.add_edge("tools","agent")
 
-db_agent = db_graph.compile()
+db_agent = db_graph.compile(checkpointer=False)
 
 @tool
 def db_specialist(query:str):

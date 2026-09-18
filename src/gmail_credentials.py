@@ -5,7 +5,7 @@ from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from sqlalchemy import create_engine, select, update
+from sqlalchemy import select, update
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -13,13 +13,11 @@ from tenacity import (
     wait_exponential,
 )
 
-from config import settings
+from database.engines import write_engine
 from database.models.oauth_credentials import OauthCredentials
 from database.session import get_db
 from logger import logger
 
-write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@{settings.db_host}/{settings.db_name}"
-write_engine = create_engine(url=write_url)
 
 class GmailCredentialsNotFound(Exception):
     """Raised when no oauth_credentials row exists yet for a given provider."""

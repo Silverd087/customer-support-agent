@@ -4,16 +4,14 @@ from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 import database.models  # noqa: F401
-from config import settings
+from database.engines import write_engine
 from database.models.oauth_credentials import OauthCredentials
 from database.session import get_db
 
-write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@{settings.db_host}/{settings.db_name}"
-write_engine = create_engine(url=write_url)
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',"https://www.googleapis.com/auth/gmail.compose"]
 TOKEN_PATH = 'gmail_token.json'
 CREDENTIALS_PATH = 'client_secret.json'

@@ -79,7 +79,9 @@ def search_knowledge_base(query: str):
     result =  vectorstore.similarity_search_with_score(query=query,k=4)
     best_distance = result[0][1]
     confidence = 1 - (best_distance/2)
-    return {"context_chunks": [doc.page_content for doc,_ in result],"confidence":confidence}
+    artifact = {"context_chunks": [doc.page_content for doc,_ in result],"confidence":confidence}
+    content =  "\n\n".join(doc.page_content for doc, _ in result)
+    return content,artifact
 
 rag_llm = llm.bind_tools([search_knowledge_base])
 
@@ -126,7 +128,7 @@ rag_graph.add_conditional_edges("agent",critique_condition,{"tools":"tools","cri
 rag_graph.add_edge("tools","agent")
 rag_graph.add_conditional_edges("critique",continue_agent,{END:END,"agent":"agent"})
 
-rag_agent = rag_graph.compile()
+rag_agent = rag_graph.compile(checkpointer=False)
 
 @tool
 def rag_specialist(question:str):

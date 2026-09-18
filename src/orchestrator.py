@@ -1,10 +1,11 @@
 import asyncio
 from typing import Annotated, TypedDict
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
 from langchain.messages import HumanMessage
 from langchain_core.messages import BaseMessage
+from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
@@ -12,15 +13,23 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from psycopg_pool import AsyncConnectionPool
 from redis.exceptions import RedisError
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 import database.models  # noqa: F401
 from cache import redis_cache
 from config import settings
+from database.engines import write_engine
+from database.models import Escalation
+from database.session import get_db
 from logger import logger
-from retries import invoke_with_retry
+from retries import invoke_with_retry, run_query_with_retry
 from specialists import db_specialist, gmail_specialist, rag_specialist
 
 load_dotenv()
+checkpointer = None
+orchestrator = None
+_init_lock = asyncio.Lock()
 
 EXPIRATION_TIME = 600
 RATE_LIMIT_THRESHOLD = 5
@@ -72,6 +81,10 @@ Never fabricate order statuses, policy details, refund amounts, or account infor
 If a tool doesn't return what you need, say so honestly or escalate — don't fill the gap
 with a plausible-sounding guess.
 """
+
+class OrchestratorNotIntsantiated(Exception):
+    """Raised when orchestrator is not instatiated."""
+
 db_uri = f"postgresql://{settings.db_user}:{settings.db_password}@{settings.db_host}:5432/{settings.db_name}"
 
 async def _init_checkpointer():
@@ -81,18 +94,58 @@ async def _init_checkpointer():
     await checkpointer.setup()
     return checkpointer
 
-checkpointer = asyncio.run(_init_checkpointer())
-
 tenant_id = UUID("a0000000-0000-0000-0000-000000000001")
 llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
-
+thread_id = uuid4()
 
 class SupportAgent(TypedDict):
     messages:Annotated[list[BaseMessage],add_messages]
     channel:str
 
+@tool
+def escalate_to_human(summary, reason,customer_email,channel) -> str:
+    """
+    Escalate the current conversation to a human support agent.
+
+    Use this when the customer explicitly asks for a human, when the RAG
+    specialist reports low or no confidence in its answer, or when the
+    request involves account security, safety, or suspected fraud.
+
+    Args:
+        summary: A concise summary, in your own words, of what the customer
+            wants and any relevant context (order numbers, what's already
+            been checked) — written for a human picking this up cold.
+        reason: Why this is being escalated. Must be one of:
+            'customer_requested', 'low_confidence', 'security_sensitive'.
+        customer_email: The customer's email if known, otherwise None.
+        channel: The channel this conversation is happening on. Must be
+            one of: 'web', 'whatsapp', 'email', 'voice'.
+
+    Returns:
+        str: A confirmation message with the escalation reference id,
+             or an error message if the escalation could not be logged.
+    """
+    try:
+        with get_db(write_engine) as db:
+            insert_stmt = insert(Escalation).values(reason=reason,summary=summary,customer_email=customer_email,channel=channel,tenant_id=tenant_id,thread_id=thread_id).on_conflict_do_nothing(index_elements=["tenant_id","reason","thread_id"]).returning(Escalation)
+            escalation = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
+            db.commit()
+            if escalation is None:
+                select_stmt = select(Escalation).where(Escalation.reason == reason, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id)
+                escalation = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
+                logger.info("escalation_deduped", escalation_id=str(escalation.id) if escalation else None, reason=reason, channel=channel, thread_id=str(thread_id))
+            else:
+                logger.warning("escalation_created", escalation_id=str(escalation.id), reason=reason, channel=channel, thread_id=str(thread_id))
+            escalation_id = escalation.id
+
+            return f"Escalation request successfully submitted escalation id {escalation_id}"
+    except Exception as e:
+        logger.error("escalation_failed", reason=reason, channel=channel, thread_id=str(thread_id), error=str(e))
+        return f"Failed to escalate request to human agent: {e!s}"
+
+
 specialists = [rag_specialist,db_specialist,gmail_specialist]
-orchestrator_llm = llm.bind_tools(specialists)
+orchestrator_llm = llm.bind_tools([*specialists,escalate_to_human])
 
 def orchestrator_node(state: SupportAgent):
     messages = [ORCHESTRATOR_SYSTEM_PROMPT] + state["messages"]
@@ -100,14 +153,20 @@ def orchestrator_node(state: SupportAgent):
 
 orchestrator_graph = StateGraph(SupportAgent)
 orchestrator_graph.add_node("agent",orchestrator_node)
-orchestrator_graph.add_node("tools",ToolNode(specialists))
+orchestrator_graph.add_node("tools",ToolNode([*specialists,escalate_to_human]))
 orchestrator_graph.add_edge(START,"agent")
 orchestrator_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
 orchestrator_graph.add_edge("tools","agent")
 
-orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
+
+async def _ensure_ready():
+    global orchestrator,checkpointer
+    async with _init_lock:
+        checkpointer = await _init_checkpointer()
+        orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
 
 async def handle_incoming(query:str,thread_id:str,channel:str):
+    await _ensure_ready()
     key = f"ratelimit:{channel}:{thread_id}"
     try:
         count = redis_cache.incr(key)
@@ -118,6 +177,9 @@ async def handle_incoming(query:str,thread_id:str,channel:str):
             return "rate limit exceeded, wait a few minutes before making another request"
     except RedisError as e:
         logger.error("redis_error", channel=channel, thread_id=str(thread_id), error=str(e))
+    if not orchestrator:
+        logger.error("orchestrator_error", channel=channel, thread_id=str(thread_id))
+        raise OrchestratorNotIntsantiated
     result = await orchestrator.ainvoke({"messages":[HumanMessage(query)],"channel":channel},{"configurable": {"thread_id": thread_id},"metadata":{"thread_id":thread_id}})
     logger.info("turn_completed", channel=channel, thread_id=str(thread_id))
     return result["messages"][-1].text

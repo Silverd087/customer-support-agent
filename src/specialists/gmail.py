@@ -122,7 +122,7 @@ gmail_graph.add_edge(START,"agent")
 gmail_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
 gmail_graph.add_edge("tools","agent")
 
-gmail_agent = gmail_graph.compile()
+gmail_agent = gmail_graph.compile(checkpointer=False)
 
 @tool
 async def gmail_specialist(query:str):
