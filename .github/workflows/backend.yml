@@ -27,5 +27,6 @@ jobs:
     - name: Type checking
       run: uv run mypy .
     - name: Security audit
-      run: uv run pip-audit
+      # chromadb server-mode RBAC/RCE advisories — we only use the embedded client, no network exposure; revisit if ingestion service ever runs Chroma standalone
+      run: pip-audit --ignore-vuln PYSEC-2026-311 --ignore-vuln PYSEC-2026-3813 --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815
     
