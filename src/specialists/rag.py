@@ -1,9 +1,9 @@
 
-from typing import Literal
+from typing import Literal, NotRequired
 from uuid import UUID
 
 from dotenv import load_dotenv
-from langchain.messages import HumanMessage, ToolMessage,AIMessage
+from langchain.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_chroma import Chroma
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -11,7 +11,6 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
-from typing import NotRequired
 
 from config import settings
 from logger import logger

@@ -6,7 +6,7 @@ from langchain_classic.document_loaders import DirectoryLoader, TextLoader
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pydantic import BaseModel, Field,SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 from config import settings
 
