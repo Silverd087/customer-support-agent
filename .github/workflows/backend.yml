@@ -25,7 +25,7 @@ jobs:
     - name: Syntax check
       run: uv run python -m compileall . -q
     - name: Type checking
-      run: uv run mypy .
+      run: uv run mypy
     - name: Security audit
       # chromadb server-mode RBAC/RCE advisories — we only use the embedded client, no network exposure; revisit if ingestion service ever runs Chroma standalone
       run: pip-audit --ignore-vuln PYSEC-2026-311 --ignore-vuln PYSEC-2026-3813 --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815
