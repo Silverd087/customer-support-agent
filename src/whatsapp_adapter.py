@@ -24,7 +24,7 @@ TRANSIENT_STATUS_CODES = {408, 429, 502, 503, 504}
 EXPIRATION_TIME = 604800
 def is_transient_post_error(exc: BaseException):
     if isinstance(exc,requests.exceptions.HTTPError):
-        return exc.response.status_code in TRANSIENT_STATUS_CODES
+        return exc.response is not None and exc.response.status_code in TRANSIENT_STATUS_CODES
     return isinstance(exc,(ConnectionError,Timeout))
 
 
@@ -122,7 +122,7 @@ async def receive_message(request: Request,background_task:BackgroundTasks):
         idempotency_key = messages[-1]["id"]
         was_set = True
         try:
-            was_set = redis_cache.set(idempotency_key,1,nx=True,ex=EXPIRATION_TIME)
+            was_set = bool(redis_cache.set(idempotency_key,1,nx=True,ex=EXPIRATION_TIME))
         except Exception as e:
             logger.error("whatsapp_dedup_check_failed", phone_number=phone_number, message_id=idempotency_key, error=str(e))
         if was_set:

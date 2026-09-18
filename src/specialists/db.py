@@ -45,8 +45,8 @@ def get_order_status(order_number: str, customer_email: str)->str:
     """
     try:
         with get_db(read_engine) as db:
-            stmt = select(Order.status).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
-            status = run_query_with_retry(lambda:db.scalar(stmt))
+            select_stmt = select(Order.status).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
+            status = run_query_with_retry(lambda:db.scalar(select_stmt))
             if status is None:
                 return "Order not found or email does not match."
             return status.value if hasattr(status, "value") else str(status)
@@ -69,16 +69,16 @@ def create_refund_request(order_number: str, customer_email: str, reason: str) -
     """
     try:
         with get_db(write_engine) as db:
-            stmt = select(Order).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
-            order = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+            select_stmt = select(Order).join(Order.customer).where(and_(Order.number == order_number,Customer.email == customer_email))
+            order = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
             if not order:
                 return "Order not found or email does not match."
             insert_stmt = insert(PendingRefund).values(order_id=order.id,customer_email=customer_email,reason=reason,tenant_id=tenant_id).on_conflict_do_nothing(index_elements=["tenant_id","reason","order_id"]).returning(PendingRefund)
             refund = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
             db.commit()
             if refund is None:
-                stmt = select(PendingRefund).where(PendingRefund.order_id == order.id, PendingRefund.reason == reason, PendingRefund.tenant_id == tenant_id)
-                refund = run_query_with_retry(lambda: db.execute(stmt).scalar_one_or_none())
+                select_refund_stmt = select(PendingRefund).where(PendingRefund.order_id == order.id, PendingRefund.reason == reason, PendingRefund.tenant_id == tenant_id)
+                refund = run_query_with_retry(lambda: db.execute(select_refund_stmt).scalar_one_or_none())
                 logger.info("refund_request_deduped", refund_id=str(refund.id) if refund else None, order_number=order_number)
             else:
                 logger.info("refund_request_created", refund_id=str(refund.id), order_number=order_number)
@@ -104,8 +104,8 @@ def get_subscription_status(customer_email:str)->str:
     """
     try:
         with get_db(read_engine) as db:
-            stmt = select(Subscription).join(Subscription.customer).where(Customer.email == customer_email).order_by(Subscription.current_period_start.desc())
-            subs = run_query_with_retry(lambda:db.scalars(stmt).all())
+            select_stmt = select(Subscription).join(Subscription.customer).where(Customer.email == customer_email).order_by(Subscription.current_period_start.desc())
+            subs = run_query_with_retry(lambda:db.scalars(select_stmt).all())
             if subs == []:
                 return "Subscription not found or email does not match."
             lines = [
@@ -133,8 +133,8 @@ def get_warranty_claim_status(order_number:str,customer_email:str)->str:
     """
     try:
         with get_db(read_engine) as db:
-            stmt = select(WarrantyClaim).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.warranty_claims).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(WarrantyClaim.created_at.desc())
-            claims = run_query_with_retry(lambda:db.scalars(stmt).all())
+            select_stmt = select(WarrantyClaim).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.warranty_claims).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(WarrantyClaim.created_at.desc())
+            claims = run_query_with_retry(lambda:db.scalars(select_stmt).all())
             if claims == []:
                 return "warranty claim not found or email does not match."
             lines = [
@@ -160,8 +160,8 @@ def get_return_status(order_number:str,customer_email:str)->str:
     """
     try:
         with get_db(read_engine) as db:
-            stmt = select(OrderReturn).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.order_returns).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(OrderReturn.requested_at.desc())
-            returns = run_query_with_retry(lambda:db.scalars(stmt).all())
+            select_stmt = select(OrderReturn).select_from(Order).join(Order.order_items).join(Order.customer).join(OrderItem.order_returns).where(and_(Customer.email == customer_email,Order.number==order_number)).order_by(OrderReturn.requested_at.desc())
+            returns = run_query_with_retry(lambda:db.scalars(select_stmt).all())
             if returns == []:
                 return "order return not found or email does not match."
             lines = [
@@ -188,8 +188,8 @@ def create_return_request(order_number, customer_email, product_name,reason):
     """
     try:
         with get_db(write_engine) as db:
-            stmt = select(OrderItem).join(OrderItem.order).join(Order.customer).join(OrderItem.product).where(and_(Order.number == order_number,Customer.email == customer_email,Product.name == product_name))
-            order_item = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+            select_stmt = select(OrderItem).join(OrderItem.order).join(Order.customer).join(OrderItem.product).where(and_(Order.number == order_number,Customer.email == customer_email,Product.name == product_name))
+            order_item = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
             if not order_item:
                 return "Order item not found or email does not match."
             order_return = OrderReturn(order_item_id=order_item.id,reason=reason,tenant_id=tenant_id)
@@ -197,8 +197,8 @@ def create_return_request(order_number, customer_email, product_name,reason):
             order_return = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
             db.commit()
             if order_return is None:
-                stmt = select(OrderReturn).where(OrderReturn.order_item_id == order_item.id, OrderReturn.reason == reason, OrderReturn.tenant_id == tenant_id)
-                order_return = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+                select_order_return_stmt = select(OrderReturn).where(OrderReturn.order_item_id == order_item.id, OrderReturn.reason == reason, OrderReturn.tenant_id == tenant_id)
+                order_return = run_query_with_retry(lambda:db.execute(select_order_return_stmt).scalar_one_or_none())
                 logger.info("return_request_deduped", return_id=str(order_return.id) if order_return else None, order_number=order_number, product_name=product_name)
             else:
                 logger.info("return_request_created", return_id=str(order_return.id), order_number=order_number, product_name=product_name)
@@ -238,8 +238,8 @@ def escalate_to_human(summary, reason,customer_email,channel) -> str:
             escalation = run_query_with_retry(lambda:db.scalars(insert_stmt).one_or_none())
             db.commit()
             if escalation is None:
-                stmt = select(Escalation).where(Escalation.reason == reason, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id)
-                escalation = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+                select_stmt = select(Escalation).where(Escalation.reason == reason, Escalation.tenant_id == tenant_id,Escalation.thread_id == thread_id)
+                escalation = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
                 logger.info("escalation_deduped", escalation_id=str(escalation.id) if escalation else None, reason=reason, channel=channel, thread_id=str(thread_id))
             else:
                 logger.warning("escalation_created", escalation_id=str(escalation.id), reason=reason, channel=channel, thread_id=str(thread_id))

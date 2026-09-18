@@ -6,11 +6,11 @@ from langchain_classic.document_loaders import DirectoryLoader, TextLoader
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field,SecretStr
 
 from config import settings
 
-llm = ChatAnthropic(api_key=settings.anthropic_api_key,model="claude-haiku-4-5-20251001")
+llm = ChatAnthropic(api_key=SecretStr(settings.anthropic_api_key),model="claude-haiku-4-5-20251001")
 prompt = ChatPromptTemplate.from_messages([
     ("system", "Analyze the text snippet and classify it into one of these exact categories: technical, billing, account, other."),
     ("user", "Text: {text}")
@@ -41,7 +41,8 @@ structured_llm = llm.with_structured_output(ChunkCategory)
 category_chain = prompt | structured_llm
 for chunk in chunks:
     result = category_chain.invoke({"text":chunk.page_content})
-    chunk.metadata["category"] = result.category
+    if isinstance(result,ChunkCategory):
+        chunk.metadata["category"] = result.category
 
 vectorstore = Chroma.from_documents(
     documents=chunks,

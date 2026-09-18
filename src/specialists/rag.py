@@ -3,7 +3,7 @@ from typing import Literal
 from uuid import UUID
 
 from dotenv import load_dotenv
-from langchain.messages import HumanMessage, ToolMessage
+from langchain.messages import HumanMessage, ToolMessage,AIMessage
 from langchain_chroma import Chroma
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -11,6 +11,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
+from typing import NotRequired
 
 from config import settings
 from logger import logger
@@ -56,12 +57,12 @@ tenant_id = UUID("a0000000-0000-0000-0000-000000000001")
 RAG_CONFIDENCE_THRESHOLD = 0.5
 
 class RagState(MessagesState):
-    revision_count: int
-    critique_verdict:str
+    revision_count: NotRequired[int]
+    critique_verdict:NotRequired[str]
 
 class Critique(BaseModel):
     verdict:Literal["APPROVED","REVISE"] = Field(description="Binary critique decision. 'APPROVED': The context fully supports the answer and resolves the user's intent. 'REVISE': Retrieval lacks necessary facts, contains off-topic noise, or the generated answer hallucinates/misinterprets context.")
-    feedback_text:str = Field(default=None,description="Actionable critique and improvement suggestions. Required if critique is 'REVISE' detailing retrieval flaws or factual inaccuracies; optional or empty if 'APPROVED'.")
+    feedback_text:str = Field(default="",description="Actionable critique and improvement suggestions. Required if critique is 'REVISE' detailing retrieval flaws or factual inaccuracies; optional or empty if 'APPROVED'.")
 
 
 @tool(response_format="content_and_artifact")
@@ -104,7 +105,7 @@ def critique(state:RagState):
         return {"critique_verdict":"REVISE","revision_count":state.get("revision_count",0)+1,"messages":[HumanMessage(f"[Critique feedback — revise your previous answer]: {feedback_text}")]}
 
 def critique_condition(state:RagState):
-    if len(state["messages"][-1].tool_calls)>0:
+    if isinstance(state["messages"][-1], AIMessage) and len(state["messages"][-1].tool_calls)>0:
         return "tools"
     else:
         return "critique"

@@ -89,13 +89,13 @@ def create_draft(customer_email:str,subject:str,body:str,reply_to_message_id:str
             pending_email = run_query_with_retry(lambda: db.scalars(insert_stmt).one_or_none())
             db.commit()
             if pending_email is None:
-                stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id)
-                pending_email = run_query_with_retry(lambda:db.execute(stmt).scalar_one_or_none())
+                select_stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id)
+                pending_email = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
                 logger.info("draft_request_deduped", pending_email_id=str(pending_email.id) if pending_email else None, thread_id=str(thread_id))
             else:
                 response = call_create_draft_with_retry(create_draft_tool,payload)
-                stmt = update(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id).values(gmail_draft_id=response["id"])
-                run_query_with_retry(lambda: db.execute(stmt))
+                update_stmt = update(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id).values(gmail_draft_id=response["id"])
+                run_query_with_retry(lambda: db.execute(update_stmt))
                 db.commit()
                 logger.info("draft_created", pending_email_id=str(pending_email.id), gmail_draft_id=response["id"], customer_email=customer_email, thread_id=str(thread_id))
             return f"Email draft successfully submitted pending email id {pending_email.id}"
@@ -145,5 +145,5 @@ async def gmail_specialist(query:str):
         str: The specialist's response — search/read results, or
              confirmation that a draft was created and queued for review.
     """
-    result = await gmail_agent.ainvoke({"messages":HumanMessage(query)})
+    result = await gmail_agent.ainvoke({"messages":[HumanMessage(query)]})
     return result["messages"][-1].text

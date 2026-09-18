@@ -43,3 +43,13 @@ dev = [
 
 [tool.ruff.lint]
 ignore = ["BLE001"]
+
+[[tool.mypy.overrides]]
+module = ["googleapiclient.*", "google_auth_oauthlib.*", "twilio.*"]
+ignore_missing_imports = true
+
+[tool.mypy]
+mypy_path = "src"
+explicit_package_bases = true
+files = ["src"]
+plugins = ["pydantic.mypy"]

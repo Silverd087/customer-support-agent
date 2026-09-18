@@ -96,6 +96,8 @@ def run_gmail_poller(interval_seconds: int = 30):
                     logger.warning("gmail_message_unreadable", message_id=msg["id"])
                     continue
                 customer_email = next((header["value"] for header in payload["headers"] if header["name"].lower() == "from"), None)
+                if not customer_email:
+                    continue
                 text = customer_email + '\n\n' + body
                 asyncio.run(handle_incoming(text, msg["threadId"], "email"))
                 logger.info("gmail_message_processed", message_id=msg["id"], thread_id=msg["threadId"])

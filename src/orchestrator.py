@@ -118,6 +118,6 @@ async def handle_incoming(query:str,thread_id:str,channel:str):
             return "rate limit exceeded, wait a few minutes before making another request"
     except RedisError as e:
         logger.error("redis_error", channel=channel, thread_id=str(thread_id), error=str(e))
-    result = await orchestrator.ainvoke({"messages":HumanMessage(query),"channel":channel},{"configurable": {"thread_id": thread_id},"metadata":{"thread_id":thread_id}})
+    result = await orchestrator.ainvoke({"messages":[HumanMessage(query)],"channel":channel},{"configurable": {"thread_id": thread_id},"metadata":{"thread_id":thread_id}})
     logger.info("turn_completed", channel=channel, thread_id=str(thread_id))
     return result["messages"][-1].text
