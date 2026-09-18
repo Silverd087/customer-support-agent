@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 import database.models  # noqa: F401
 from database.engines import review_engine
 from database.models.pending_email_send import PendingEmailSend, Status
-from gmail_credentials import get_gmail_service
+from auth.gmail_credentials import get_gmail_service
 
 SessionLocal = sessionmaker(bind=review_engine, expire_on_commit=False)
 

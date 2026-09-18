@@ -6,7 +6,7 @@ import time
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from gmail_credentials import get_gmail_service
+from auth.gmail_credentials import get_gmail_service
 from logger import logger
 from orchestrator import handle_incoming
 

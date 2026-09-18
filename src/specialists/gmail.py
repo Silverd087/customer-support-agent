@@ -24,7 +24,7 @@ from config import settings
 from database.engines import write_engine
 from database.models.pending_email_send import PendingEmailSend
 from database.session import get_db
-from gmail_credentials import get_gmail_headers
+from auth.gmail_credentials import get_gmail_headers
 from logger import logger
 from retries import invoke_with_retry, run_query_with_retry
 
