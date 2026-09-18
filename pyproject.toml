@@ -46,7 +46,7 @@ dev = [
 ignore = ["BLE001"]
 
 [[tool.mypy.overrides]]
-module = ["googleapiclient.*", "google_auth_oauthlib.*", "twilio.*"]
+module = ["googleapiclient.*", "google_auth_oauthlib.*", "twilio.*", "celery.*"]
 ignore_missing_imports = true
 
 [tool.mypy]

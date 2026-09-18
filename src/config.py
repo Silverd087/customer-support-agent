@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     db_host:str
     db_name:str
     domain:str
+    broker_url:str
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

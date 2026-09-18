@@ -2,12 +2,13 @@ from typing import Literal
 
 from langchain_anthropic import ChatAnthropic
 from langchain_chroma import Chroma
-from langchain_classic.document_loaders import DirectoryLoader, TextLoader
+from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field, SecretStr
 
+from celery_main import app
 from config import settings
 
 llm = ChatAnthropic(api_key=SecretStr(settings.anthropic_api_key),model="claude-haiku-4-5-20251001")
@@ -25,27 +26,25 @@ embedding_model = HuggingFaceEmbeddings(
     model_name="BAAI/bge-m3",
     encode_kwargs={"normalize_embeddings": True}
 )
-loader = DirectoryLoader(
-    path="knowledge_base",
-    glob="**/*.md",
-    loader_cls=TextLoader
-)
 
-documents = loader.load()
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size = 1000,
-    chunk_overlap = 200
-)
-chunks = splitter.split_documents(documents=documents)
-structured_llm = llm.with_structured_output(ChunkCategory)
-category_chain = prompt | structured_llm
-for chunk in chunks:
-    result = category_chain.invoke({"text":chunk.page_content})
-    if isinstance(result,ChunkCategory):
-        chunk.metadata["category"] = result.category
 
-vectorstore = Chroma.from_documents(
-    documents=chunks,
-    embedding=embedding_model,
-    collection_name="organization_policies",
-    persist_directory="./chroma_langchain_db")
+@app.task
+def ingest_documents(content:str,filename):
+    doc = Document(page_content=content, metadata={"source": filename})    
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size = 1000,
+        chunk_overlap = 200
+    )
+    chunks = splitter.split_documents(documents=[doc])
+    structured_llm = llm.with_structured_output(ChunkCategory)
+    category_chain = prompt | structured_llm
+    for chunk in chunks:
+        result = category_chain.invoke({"text":chunk.page_content})
+        if isinstance(result,ChunkCategory):
+            chunk.metadata["category"] = result.category
+
+    Chroma.from_documents(
+        documents=chunks,
+        embedding=embedding_model,
+        collection_name="organization_policies",
+        persist_directory="./chroma_langchain_db")

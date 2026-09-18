@@ -18,9 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 import database.models  # noqa: F401
+from auth.gmail_credentials import get_gmail_service
 from database.engines import review_engine
 from database.models.pending_email_send import PendingEmailSend, Status
-from auth.gmail_credentials import get_gmail_service
 
 SessionLocal = sessionmaker(bind=review_engine, expire_on_commit=False)
 
