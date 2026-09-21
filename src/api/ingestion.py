@@ -1,10 +1,12 @@
-from fastapi import APIRouter, HTTPException, UploadFile, status
+from fastapi import APIRouter, HTTPException, Security, UploadFile, status
 
+from api.dependencies import verify_api_key
 from ingest import ingest_documents
 
 router = APIRouter()
 
-@router.post("/documents/ingestion")
+
+@router.post("/documents/ingestion",dependencies=[Security(verify_api_key)])
 async def ingest(file:UploadFile):
     if file.filename and not file.filename.endswith(".md"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,detail="Bad file extension")

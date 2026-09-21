@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     db_name:str
     domain:str
     broker_url:str
+    ingestion_api_key:str
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"
