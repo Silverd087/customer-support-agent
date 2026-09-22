@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     domain:str
     broker_url:str
     ingestion_api_key:str
+    twilio_auth_token:str
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

@@ -1,12 +1,13 @@
 
 from fastapi import FastAPI
 
-from adapters import whatsapp
+from adapters import voice, whatsapp
 from api import ingestion
 
 app = FastAPI()
 app.include_router(router=whatsapp.router,prefix="/api")
 app.include_router(router=ingestion.router,prefix="/api")
+app.include_router(router=voice.router,prefix="/api")
 @app.get("/healthz")
 def health():
     return {

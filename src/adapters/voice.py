@@ -4,13 +4,15 @@ import json
 
 import websockets
 from elevenlabs import AsyncElevenLabs, VoiceSettings
-from fastapi import APIRouter, Response, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, status
+from fastapi.requests import Request
 from tenacity import (
     retry,
     retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
+from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Connect, VoiceResponse
 from websockets.exceptions import InvalidHandshake, InvalidStatus, WebSocketException
 
@@ -55,8 +57,16 @@ elevenlabs = AsyncElevenLabs(
     api_key=settings.elevenlabs_api_key,
 )
 
+validator = RequestValidator(settings.twilio_auth_token)
 
-@router.post("/voice/incoming")
+async def verify_twilio_signature(request:Request):
+    signature = request.headers.get("X-Twilio-Signature","")
+    form = await request.form()
+    url = f"https://{settings.domain}/api/voice/incoming"
+    if not validator.validate(url,dict(form),signature):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
+
+@router.post("/voice/incoming",dependencies=[Depends(verify_twilio_signature)])
 def incoming_call():
     response = VoiceResponse()
     connect = Connect()
