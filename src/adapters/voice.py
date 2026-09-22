@@ -16,6 +16,7 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Connect, VoiceResponse
 from websockets.exceptions import InvalidHandshake, InvalidStatus, WebSocketException
 
+from cache import redis_cache
 from config import settings
 from logger import logger
 from orchestrator import handle_incoming
@@ -65,6 +66,9 @@ async def verify_twilio_signature(request:Request):
     url = f"https://{settings.domain}/api/voice/incoming"
     if not validator.validate(url,dict(form),signature):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
+    call_sid = form["CallSid"]
+    redis_cache.set(f"verified call:{call_sid}",1,ex=60)
+    
 
 @router.post("/voice/incoming",dependencies=[Depends(verify_twilio_signature)])
 def incoming_call():
@@ -76,11 +80,34 @@ def incoming_call():
 
 @router.websocket("/ws/call")
 async def call(twilio_ws:WebSocket):
-    await twilio_ws.accept()
     stream_sid = None
     call_sid = None
     reply_task = None
     openai_ws = None
+    await twilio_ws.accept()
+
+    while True:
+        message_text = await twilio_ws.receive_text()
+        data = json.loads(message_text)
+        event_type = data.get("event")
+
+        if event_type == "connected":
+            logger.info("twilio_stream_connected")
+            continue
+        elif event_type == "start":
+            stream_sid = data["start"]["streamSid"]
+            call_sid = data["start"]["callSid"]
+            logger.info("call_started", call_sid=call_sid, stream_sid=stream_sid)
+            cached_key = redis_cache.get(f"verified call:{call_sid}")
+            if cached_key:
+                logger.info("call_sid_cache_hit")
+                redis_cache.delete(f"verified call:{call_sid}")
+                break
+            else:
+                logger.info("call_sid_cache_miss")
+                await twilio_ws.close(1008)
+                return
+
 
     headers = {
         "Authorization": f"Bearer {settings.openai_api_key}",
@@ -145,14 +172,7 @@ async def call(twilio_ws:WebSocket):
                         data = json.loads(message_text)
                         event_type = data.get("event")
 
-                        if event_type == "connected":
-                            logger.info("twilio_stream_connected")
-                        elif event_type == "start":
-                            stream_sid = data["start"]["streamSid"]
-                            call_sid = data["start"]["callSid"]
-                            logger.info("call_started", call_sid=call_sid, stream_sid=stream_sid)
-
-                        elif event_type == "media":
+                        if event_type == "media":
                             audio_append = {
                                 "type": "input_audio_buffer.append",
                                 "audio": data["media"]["payload"]
