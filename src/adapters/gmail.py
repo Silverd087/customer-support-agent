@@ -1,11 +1,10 @@
 
 import asyncio
-import base64
 import time
 
-from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from adapters.utils import extract_email_body
 from auth.gmail_credentials import get_gmail_service
 from logger import logger
 from orchestrator import handle_incoming
@@ -47,41 +46,6 @@ def mark_as_read(id:str):
     service = get_gmail_service()
     mark_as_read_with_retry(service,id)
 
-def _extract_body(payload) -> str | None:
-    """Walk a Gmail message payload for its text content.
-
-    Real emails are usually multipart/alternative (a text/plain part and a
-    text/html part carrying the same content) sometimes nested inside
-    multipart/mixed if there are attachments — payload["body"]["data"] is
-    only populated directly for simple, non-multipart messages. Prefers
-    text/plain; falls back to a crude HTML-tag strip of text/html if no
-    plain-text part exists anywhere in the tree.
-    """
-    mime_type = payload.get("mimeType", "")
-
-    if mime_type == "text/plain":
-        data = payload.get("body", {}).get("data")
-        return base64.urlsafe_b64decode(data).decode("utf-8") if data else None
-
-    if mime_type.startswith("multipart/"):
-        for part in payload.get("parts", []):
-            found = _extract_body(part)
-            if found:
-                return found
-        return None
-
-    if mime_type == "text/html":
-        data = payload.get("body", {}).get("data")
-        if not data:
-            return None
-        html = base64.urlsafe_b64decode(data).decode("utf-8")
-        # Crude fallback only — no bs4/html2text dependency added for this.
-        # Reach for BeautifulSoup(html, "html.parser").get_text() instead
-        # if this ever needs to handle real-world HTML reliably.
-        return BeautifulSoup(html,"html.parser").get_text()
-
-    return None
-
 
 def run_gmail_poller(interval_seconds: int = 30):
     while True:
@@ -91,7 +55,7 @@ def run_gmail_poller(interval_seconds: int = 30):
         for msg in unread_messages:
             try:
                 payload = msg["payload"]
-                body = _extract_body(payload)
+                body = extract_email_body(payload)
                 if not body:
                     logger.warning("gmail_message_unreadable", message_id=msg["id"])
                     continue

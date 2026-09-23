@@ -14,33 +14,13 @@ from tenacity import (
 )
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Connect, VoiceResponse
-from websockets.exceptions import InvalidHandshake, InvalidStatus, WebSocketException
 
+from adapters.utils import is_transient_websocket_error
 from cache import redis_cache
 from config import settings
 from logger import logger
 from orchestrator import handle_incoming
 
-TRANSIENT_HANDSHAKE_STATUSES: set[int] = {
-    408,  # Request Timeout
-    429,  # Too Many Requests (Rate limit)
-    500,  # Internal Server Error
-    502,  # Bad Gateway
-    503,  # Service Unavailable
-    504,  # Gateway Timeout
-}
-
-def is_transient_websocket_error(exc:BaseException):
-    if isinstance(exc,(OSError,ConnectionRefusedError,ConnectionResetError,TimeoutError)):
-        return True
-    if isinstance(exc,(InvalidHandshake)):
-        return True
-    if isinstance(exc,InvalidStatus):
-        return exc.response.status_code in TRANSIENT_HANDSHAKE_STATUSES
-    if isinstance(exc, WebSocketException):
-        exc_name = type(exc).__name__
-        return any(k in exc_name for k in ("Timeout", "Reset", "Aborted"))
-    return False
 
 @retry(
     retry=retry_if_exception(is_transient_websocket_error),

@@ -1,11 +1,9 @@
-import hashlib
-import hmac
+
 import json
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
-from requests.exceptions import ConnectionError, Timeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -13,6 +11,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from adapters.utils import is_transient_post_error, verify_meta_signature
 from cache import redis_cache
 from config import settings
 from logger import logger
@@ -20,12 +19,7 @@ from orchestrator import handle_incoming
 
 router = APIRouter()
 
-TRANSIENT_STATUS_CODES = {408, 429, 502, 503, 504}
 EXPIRATION_TIME = 604800
-def is_transient_post_error(exc: BaseException):
-    if isinstance(exc,requests.exceptions.HTTPError):
-        return exc.response is not None and exc.response.status_code in TRANSIENT_STATUS_CODES
-    return isinstance(exc,(ConnectionError,Timeout))
 
 
 @retry(
@@ -39,25 +33,6 @@ def call_post_request_with_retry(url,headers,post_payload):
     response.raise_for_status()
     return response
 
-
-def verify_meta_signature(raw_body:bytes,signature:str | None,app_secret:str):
-    if not signature:
-        return False
-
-    elements = signature.split("sha256=")
-    if len(elements) != 2:
-        return False
-
-    expected_signature = elements[1]
-
-    mac = hmac.new(
-        key=app_secret.encode("utf-8"),
-        msg=raw_body,
-        digestmod=hashlib.sha256
-    )
-    generated_signature = mac.hexdigest()
-
-    return hmac.compare_digest(generated_signature,expected_signature)
 
 async def agent_answer(last_message,phone_number,phone_number_id,idempotency_key):
     try:
