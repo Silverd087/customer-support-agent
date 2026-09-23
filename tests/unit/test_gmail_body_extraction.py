@@ -13,7 +13,6 @@ class TestExtractEmail:
                 "data":encoded_body
             }
         }
-        print(payload.get("body",{}))
         assert extract_email_body(payload) == body
 
     def test_extract_body_recurses_multipart_to_find_plain_text(self):
@@ -59,10 +58,9 @@ class TestExtractEmail:
                 "data":encoded_body
             }
         }
-        print(payload.get("body",{}))
         assert extract_email_body(payload) == body
 
-    def test_extract_body_returns_none_when_nothing_found(self):
+    def test_extract_body_empty_plain_text_content(self):
         body = ""
         encoded_body = base64.urlsafe_b64encode(body.encode("utf-8")).decode("utf-8")
         payload = {
@@ -71,5 +69,15 @@ class TestExtractEmail:
                 "data":encoded_body
             }
         }
-        print(payload.get("body",{}))
+        assert extract_email_body(payload) is None
+
+    def test_extract_body_returns_none_for_unrecognized_mime_type(self):
+        body = "irrelevant"
+        encoded_body = base64.urlsafe_b64encode(body.encode("utf-8")).decode("utf-8")
+        payload = {
+            "mimeType":"application/pdf",
+            "body": {
+                "data":encoded_body
+            }
+        }
         assert extract_email_body(payload) is None
