@@ -1,7 +1,15 @@
-from specialists.rag import search_knowledge_base,critique_condition,continue_agent,rag_specialist
-from langchain.messages import AIMessage,ToolCall
-from langgraph.graph import MessagesState,END
-from specialists.rag import RagState
+from langchain.messages import AIMessage, ToolCall
+from langgraph.graph import END, MessagesState
+
+from specialists.rag import (
+    RagState,
+    continue_agent,
+    critique_condition,
+    rag_specialist,
+    search_knowledge_base,
+)
+
+
 class TestRagSpecialist:
     def test_search_knowledge_base_returns_content_and_artifact_tuple(self,mock_similarity_search):
         content,artifact = search_knowledge_base.func("test_query")

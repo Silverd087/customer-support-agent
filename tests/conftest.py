@@ -1,8 +1,9 @@
 from unittest.mock import Mock
+
 import pytest
+from langchain.messages import ToolMessage
 from langchain_classic.docstore.document import Document
-from specialists.rag import rag_specialist
-from langchain.messages import AIMessage,ToolMessage
+
 
 @pytest.fixture
 def mock_similarity_search(mocker):
