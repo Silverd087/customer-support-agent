@@ -137,13 +137,12 @@ def rag_specialist(question:str):
     procedure — never answer those from memory."""
     result = rag_agent.invoke({"messages":[HumanMessage(question)]})
     answer =  result["messages"][-1].text
-
     confidence = None
     for msg in reversed(result["messages"]):
         if getattr(msg, "name", None) == "search_knowledge_base":
             confidence = msg.artifact.get("confidence") if hasattr(msg, "artifact") else None
 
-    if confidence is not None and confidence < RAG_CONFIDENCE_THRESHOLD:
+    if confidence and confidence < RAG_CONFIDENCE_THRESHOLD:
         logger.warning("rag_low_confidence", question=question, confidence=confidence)
         return f"{answer}\n\n[LOW_CONFIDENCE: retrieval score {confidence:.2f}]"
     return answer
