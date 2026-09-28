@@ -1,9 +1,9 @@
-from unittest.mock import Mock
+from unittest.mock import Mock,MagicMock
 
 import pytest
 from langchain.messages import ToolMessage
 from langchain_classic.docstore.document import Document
-
+import uuid
 
 @pytest.fixture
 def mock_similarity_search(mocker):
@@ -49,3 +49,5 @@ def mock_rag_agent_high_confidence(mocker):
 
     mocker.patch("specialists.rag.rag_agent", fake_agent)
     return fake_tool_message
+
+
