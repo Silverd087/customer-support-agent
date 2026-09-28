@@ -1,5 +1,7 @@
+from unittest.mock import MagicMock, Mock
+
 from specialists.db import create_refund_request, get_order_status
-from unittest.mock import Mock,MagicMock
+
 
 class TestDbSpecialist:
     def test_create_refund_request_creates_new(self,mocker):
