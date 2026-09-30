@@ -48,7 +48,7 @@ async def verify_twilio_signature(request:Request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
     call_sid = form["CallSid"]
     redis_cache.set(f"verified call:{call_sid}",1,ex=60)
-    
+   
 
 @router.post("/voice/incoming",dependencies=[Depends(verify_twilio_signature)])
 def incoming_call():
