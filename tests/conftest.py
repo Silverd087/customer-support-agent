@@ -1,8 +1,11 @@
 from unittest.mock import Mock
 
 import pytest
+from fastapi.testclient import TestClient
 from langchain.messages import ToolMessage
 from langchain_classic.docstore.document import Document
+
+from main import app
 
 
 @pytest.fixture
@@ -51,3 +54,7 @@ def mock_rag_agent_high_confidence(mocker):
     return fake_tool_message
 
 
+@pytest.fixture
+def test_client():
+    client = TestClient(app)
+    return client
