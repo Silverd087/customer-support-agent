@@ -154,5 +154,6 @@ async def gmail_specialist(query:str):
              confirmation that a draft was created and queued for review.
     """
     await _ensure_gmail_ready()
-    result = await gmail_agent.ainvoke({"messages":[HumanMessage(query)]})
+    if gmail_agent:
+        result = await gmail_agent.ainvoke({"messages":[HumanMessage(query)]})
     return result["messages"][-1].text
