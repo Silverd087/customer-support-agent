@@ -128,6 +128,29 @@ jobs:
       run: uv run pytest tests/unit
   integration-test:
     needs: unit-test
+    env:
+      GOOGLE_API_KEY: test-key
+      ANTHROPIC_API_KEY: test-key
+      WRITE_ROLE_USER: test
+      WRITE_ROLE_PASSWORD: test
+      READ_ROLE_USER: test
+      READ_ROLE_PASSWORD: test
+      HUMAN_REVIEWER_ROLE_USER: test
+      HUMAN_REVIEWER_ROLE_PASSWORD: test
+      VERIFY_TOKEN: test
+      APP_SECRET: test
+      WHATSAPP_ACCESS_TOKEN: test
+      OPENAI_API_KEY: test-key
+      ELEVENLABS_API_KEY: test-key
+      DB_USER: test
+      DB_PASSWORD: test
+      REDIS_URL: redis://localhost:6379
+      DB_HOST: localhost
+      DB_NAME: test
+      DOMAIN: localhost
+      BROKER_URL: redis://localhost:6379
+      INGESTION_API_KEY: test-key
+      TWILIO_AUTH_TOKEN: test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
