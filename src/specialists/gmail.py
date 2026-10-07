@@ -26,6 +26,7 @@ from database.engines import write_engine
 from database.models.pending_email_send import PendingEmailSend
 from database.session import get_db
 from logger import logger
+from rag_config import GEMINI_MODEL
 from retries import invoke_with_retry, run_query_with_retry
 
 if sys.platform == "win32":
@@ -40,97 +41,98 @@ all_gmail_tools_by_name  = None
 _init_lock = asyncio.Lock()
 
 
-llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
+llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model=GEMINI_MODEL)
 tenant_id = UUID("a0000000-0000-0000-0000-000000000001")
 
 async def _ensure_gmail_ready():
     global gmail_agent,all_gmail_tools_by_name
     async with _init_lock:
-        mcp_client = MultiServerMCPClient({
-            "gmail": {
-                "transport": "streamable_http",
-                "url": "https://gmailmcp.googleapis.com/mcp/v1",
-                "headers": get_gmail_headers(),
-            }
-        })
+        if gmail_agent is None:
+            mcp_client = MultiServerMCPClient({
+                "gmail": {
+                    "transport": "streamable_http",
+                    "url": "https://gmailmcp.googleapis.com/mcp/v1",
+                    "headers": get_gmail_headers(),
+                }
+            })
 
-        all_gmail_tools =  asyncio.run(mcp_client.get_tools())
-        all_gmail_tools_by_name = {tool.name: tool for tool in all_gmail_tools}
-        @tool
-        def create_draft(customer_email:str,subject:str,body:str,reply_to_message_id:str | None=None):
-            """
-            Create a draft reply email to a customer and queue it for human approval.
+            all_gmail_tools =  await mcp_client.get_tools()
+            all_gmail_tools_by_name = {tool.name: tool for tool in all_gmail_tools}
+            @tool
+            def create_draft(customer_email:str,subject:str,body:str,reply_to_message_id:str | None=None):
+                """
+                Create a draft reply email to a customer and queue it for human approval.
 
-            This never sends anything. It creates a Gmail draft via the Gmail MCP
-            connection and logs a 'pending_review' row for a human to review and
-            send later — the send step happens outside this conversation entirely.
+                This never sends anything. It creates a Gmail draft via the Gmail MCP
+                connection and logs a 'pending_review' row for a human to review and
+                send later — the send step happens outside this conversation entirely.
 
-            Args:
-                customer_email: The recipient's email address.
-                subject: The subject line for the draft.
-                body: The plain-text body of the draft.
-                reply_to_message_id: The id of the message being replied to, if this
-                    draft is a reply within an existing thread (get it from
-                    search_threads/get_thread). Omit for a new, unthreaded email.
+                Args:
+                    customer_email: The recipient's email address.
+                    subject: The subject line for the draft.
+                    body: The plain-text body of the draft.
+                    reply_to_message_id: The id of the message being replied to, if this
+                        draft is a reply within an existing thread (get it from
+                        search_threads/get_thread). Omit for a new, unthreaded email.
 
-            Returns:
-                str: A confirmation message with the pending email id, or an error
-                    message if the draft could not be created or logged.
-            """
-            try:
-                with get_db(write_engine) as db:
-                    create_draft_tool = all_gmail_tools_by_name.get("create_draft")
-                    if not create_draft_tool:
-                        logger.error("gmail_create_draft_tool_missing", available_tools=list(all_gmail_tools_by_name.keys()))
-                        return
-                    payload = {
-                        "to":[customer_email],
-                        "subject":subject,
-                        "body":body,
-                    }
-                    if reply_to_message_id:
-                        payload["replyToMessageId"] = reply_to_message_id
-                    else:
-                        content = f"{subject}\0{body}".encode()
-                        reply_to_message_id = hashlib.sha256(content).hexdigest()
-                    insert_stmt = insert(PendingEmailSend).values(tenant_id=tenant_id,thread_id=thread_id,customer_email=customer_email,subject=subject,reply_to_message_id = reply_to_message_id).on_conflict_do_nothing(index_elements=["tenant_id","thread_id","reply_to_message_id"]).returning(PendingEmailSend)
-                    pending_email = run_query_with_retry(lambda: db.scalars(insert_stmt).one_or_none())
-                    db.commit()
-                    if pending_email is None:
-                        select_stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id)
-                        pending_email = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
-                        logger.info("draft_request_deduped", pending_email_id=str(pending_email.id) if pending_email else None, thread_id=str(thread_id))
-                    else:
-                        response = call_create_draft_with_retry(create_draft_tool,payload)
-                        update_stmt = update(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id).values(gmail_draft_id=response["id"])
-                        run_query_with_retry(lambda: db.execute(update_stmt))
+                Returns:
+                    str: A confirmation message with the pending email id, or an error
+                        message if the draft could not be created or logged.
+                """
+                try:
+                    with get_db(write_engine) as db:
+                        create_draft_tool = all_gmail_tools_by_name.get("create_draft")
+                        if not create_draft_tool:
+                            logger.error("gmail_create_draft_tool_missing", available_tools=list(all_gmail_tools_by_name.keys()))
+                            return
+                        payload = {
+                            "to":[customer_email],
+                            "subject":subject,
+                            "body":body,
+                        }
+                        if reply_to_message_id:
+                            payload["replyToMessageId"] = reply_to_message_id
+                        else:
+                            content = f"{subject}\0{body}".encode()
+                            reply_to_message_id = hashlib.sha256(content).hexdigest()
+                        insert_stmt = insert(PendingEmailSend).values(tenant_id=tenant_id,thread_id=thread_id,customer_email=customer_email,subject=subject,reply_to_message_id = reply_to_message_id).on_conflict_do_nothing(index_elements=["tenant_id","thread_id","reply_to_message_id"]).returning(PendingEmailSend)
+                        pending_email = run_query_with_retry(lambda: db.scalars(insert_stmt).one_or_none())
                         db.commit()
-                        logger.info("draft_created", pending_email_id=str(pending_email.id), gmail_draft_id=response["id"], customer_email=customer_email, thread_id=str(thread_id))
-                    return f"Email draft successfully submitted pending email id {pending_email.id}"
-            except Exception as e:
-                logger.error("draft_creation_failed", customer_email=customer_email, thread_id=str(thread_id), error=str(e))
-                return f"Failed to create email draft to customer: {e!s}"
+                        if pending_email is None:
+                            select_stmt = select(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id)
+                            pending_email = run_query_with_retry(lambda:db.execute(select_stmt).scalar_one_or_none())
+                            logger.info("draft_request_deduped", pending_email_id=str(pending_email.id) if pending_email else None, thread_id=str(thread_id))
+                        else:
+                            response = call_create_draft_with_retry(create_draft_tool,payload)
+                            update_stmt = update(PendingEmailSend).where(PendingEmailSend.tenant_id == tenant_id, PendingEmailSend.thread_id == thread_id, PendingEmailSend.reply_to_message_id == reply_to_message_id).values(gmail_draft_id=response["id"])
+                            run_query_with_retry(lambda: db.execute(update_stmt))
+                            db.commit()
+                            logger.info("draft_created", pending_email_id=str(pending_email.id), gmail_draft_id=response["id"], customer_email=customer_email, thread_id=str(thread_id))
+                        return f"Email draft successfully submitted pending email id {pending_email.id}"
+                except Exception as e:
+                    logger.error("draft_creation_failed", customer_email=customer_email, thread_id=str(thread_id), error=str(e))
+                    return f"Failed to create email draft to customer: {e!s}"
 
-        @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((httpx.ReadTimeout,httpx.ConnectError,httpx.RemoteProtocolError)))
-        def call_create_draft_with_retry(gmail_tool,message):
-            return gmail_tool.invoke(message)
+            @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((httpx.ReadTimeout,httpx.ConnectError,httpx.RemoteProtocolError)))
+            def call_create_draft_with_retry(gmail_tool,message):
+                return gmail_tool.invoke(message)
 
-        gmail_tools = [tool for tool in all_gmail_tools if tool.name in ALLOWED_TOOLS] + [create_draft]
+            gmail_tools = [tool for tool in all_gmail_tools if tool.name in ALLOWED_TOOLS] + [create_draft]
 
-        gmail_llm = llm.bind_tools(gmail_tools)
+            gmail_llm = llm.bind_tools(gmail_tools)
 
-        def gmail_agent_node(state:MessagesState):
-            return {"messages":[invoke_with_retry(gmail_llm,state["messages"])]}
+            def gmail_agent_node(state:MessagesState):
+                return {"messages":[invoke_with_retry(gmail_llm,state["messages"])]}
 
 
-        gmail_graph = StateGraph(MessagesState)
-        gmail_graph.add_node("agent",gmail_agent_node)
-        gmail_graph.add_node("tools",ToolNode(gmail_tools))
-        gmail_graph.add_edge(START,"agent")
-        gmail_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
-        gmail_graph.add_edge("tools","agent")
+            gmail_graph = StateGraph(MessagesState)
+            gmail_graph.add_node("agent",gmail_agent_node)
+            gmail_graph.add_node("tools",ToolNode(gmail_tools))
+            gmail_graph.add_edge(START,"agent")
+            gmail_graph.add_conditional_edges("agent",tools_condition,{"tools":"tools",END:END})
+            gmail_graph.add_edge("tools","agent")
 
-        gmail_agent = gmail_graph.compile(checkpointer=False)
+            gmail_agent = gmail_graph.compile(checkpointer=False)
 
 @tool
 async def gmail_specialist(query:str):

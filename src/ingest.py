@@ -10,8 +10,15 @@ from pydantic import BaseModel, Field, SecretStr
 
 from celery_main import app
 from config import settings
+from rag_config import (
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    CLAUDE_CATEGORIZATION_MODEL,
+    COLLECTION_NAME,
+    EMBEDDING_MODEL,
+)
 
-llm = ChatAnthropic(api_key=SecretStr(settings.anthropic_api_key),model="claude-haiku-4-5-20251001")
+llm = ChatAnthropic(api_key=SecretStr(settings.anthropic_api_key),model=CLAUDE_CATEGORIZATION_MODEL)
 prompt = ChatPromptTemplate.from_messages([
     ("system", "Analyze the text snippet and classify it into one of these exact categories: technical, billing, account, other."),
     ("user", "Text: {text}")
@@ -23,7 +30,7 @@ class ChunkCategory(BaseModel):
 
 
 embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
+    model_name=EMBEDDING_MODEL,
     encode_kwargs={"normalize_embeddings": True}
 )
 
@@ -32,8 +39,8 @@ embedding_model = HuggingFaceEmbeddings(
 def ingest_documents(content:str,filename):
     doc = Document(page_content=content, metadata={"source": filename})    
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size = 1000,
-        chunk_overlap = 200
+        chunk_size = CHUNK_SIZE,
+        chunk_overlap = CHUNK_OVERLAP
     )
     chunks = splitter.split_documents(documents=[doc])
     structured_llm = llm.with_structured_output(ChunkCategory)
@@ -46,5 +53,5 @@ def ingest_documents(content:str,filename):
     Chroma.from_documents(
         documents=chunks,
         embedding=embedding_model,
-        collection_name="organization_policies",
+        collection_name=COLLECTION_NAME,
         persist_directory="./chroma_langchain_db")

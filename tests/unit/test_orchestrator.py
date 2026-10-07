@@ -25,7 +25,8 @@ class TestOrchestrator:
         )
         final_reply = AIMessage("I've flagged this for a teammate.")
         mocker.patch("orchestrator.invoke_with_retry", side_effect=[escalate_call, final_reply])
-        fake_escalation = Mock("escalation-uuid-778")
+        fake_escalation = Mock()
+        fake_escalation.id = "escalation-uuid-778"
         mock_db = MagicMock()
         mock_db.scalars.return_value.one_or_none.return_value = fake_escalation
 

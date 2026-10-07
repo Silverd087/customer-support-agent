@@ -23,6 +23,7 @@ from database.engines import write_engine
 from database.models import Escalation
 from database.session import get_db
 from logger import logger
+from rag_config import GEMINI_MODEL
 from retries import invoke_with_retry, run_query_with_retry
 from specialists import db_specialist, gmail_specialist, rag_specialist
 
@@ -99,7 +100,7 @@ async def _init_checkpointer():
     return checkpointer
 
 tenant_id = UUID("a0000000-0000-0000-0000-000000000001")
-llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
+llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model=GEMINI_MODEL)
 thread_id = uuid4()
 
 class SupportAgent(TypedDict):
@@ -166,8 +167,9 @@ orchestrator_graph.add_edge("tools","agent")
 async def _ensure_ready():
     global orchestrator,checkpointer
     async with _init_lock:
-        checkpointer = await _init_checkpointer()
-        orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
+        if orchestrator is None:
+            checkpointer = await _init_checkpointer()
+            orchestrator = orchestrator_graph.compile(checkpointer=checkpointer)
 
 async def handle_incoming(query:str,thread_id:str,channel:str):
     await _ensure_ready()

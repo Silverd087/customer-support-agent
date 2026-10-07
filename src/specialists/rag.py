@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from logger import logger
+from rag_config import COLLECTION_NAME, EMBEDDING_MODEL, GEMINI_MODEL, RETRIEVAL_K
 from retries import invoke_with_retry
 
 load_dotenv()
@@ -43,13 +44,13 @@ DRAFT ANSWER:
 {draft_answer}
 """
 
-llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
+llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model=GEMINI_MODEL)
 embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
+    model_name=EMBEDDING_MODEL,
     encode_kwargs={"normalize_embeddings": True}
 )
 vectorstore = Chroma(
-    collection_name="organization_policies",
+    collection_name=COLLECTION_NAME,
     persist_directory="./chroma_langchain_db",
     embedding_function=embedding_model)
 tenant_id = UUID("a0000000-0000-0000-0000-000000000001")
@@ -76,7 +77,7 @@ def search_knowledge_base(query: str):
             - 'context_chunks' (list[tuple[str, float]]): Up to 4 retrieved document snippets with their vector distance scores.
             - 'confidence' (float): A calculated confidence metric (0.0 to 1.0) derived from the top result's distance score.
     """
-    result =  vectorstore.similarity_search_with_score(query=query,k=4)
+    result =  vectorstore.similarity_search_with_score(query=query,k=RETRIEVAL_K)
     best_distance = result[0][1]
     confidence = 1 - (best_distance/2)
     artifact = {"context_chunks": [doc.page_content for doc,_ in result],"confidence":confidence}

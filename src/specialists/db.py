@@ -21,13 +21,14 @@ from database.models.subscription import Subscription
 from database.models.warranty_claim import WarrantyClaim
 from database.session import get_db
 from logger import logger
+from rag_config import GEMINI_MODEL
 from retries import invoke_with_retry, run_query_with_retry
 
 load_dotenv()
 
 thread_id = uuid4()
 tenant_id = UUID("a0000000-0000-0000-0000-000000000001")
-llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model="gemini-2.5-flash")
+llm = ChatGoogleGenerativeAI(api_key=settings.google_api_key,model=GEMINI_MODEL)
 
 @tool
 def get_order_status(order_number: str, customer_email: str)->str:
