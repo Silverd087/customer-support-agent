@@ -190,7 +190,7 @@ jobs:
       - name: Run retrieval eval
         run: uv run python -m src.scripts.eval_retrieval
   build:
-    needs: [lint, syntax, typecheck, security-audit, integration-test]
+    needs: [lint, syntax, typecheck, security-audit, integration-test, eval]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
