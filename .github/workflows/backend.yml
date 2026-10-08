@@ -170,6 +170,7 @@ jobs:
     - name: Run integration tests
       run: uv run pytest tests/integration
   eval:
+  needs: [unit-test,integration-test]
   runs-on: ubuntu-latest
   steps:
     - uses: actions/checkout@v4
