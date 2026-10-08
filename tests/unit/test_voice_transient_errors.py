@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from websockets.exceptions import InvalidHandshake, InvalidStatus, WebSocketException
 
-from adapters.utils import is_transient_websocket_error
+from src.adapters.utils import is_transient_websocket_error
 
 
 class TestVoiceTransientErrors:

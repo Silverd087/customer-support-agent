@@ -15,11 +15,11 @@ from tenacity import (
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
-from adapters.utils import is_transient_websocket_error
-from cache import redis_cache
-from config import settings
-from logger import logger
-from orchestrator import handle_incoming
+from src.adapters.utils import is_transient_websocket_error
+from src.cache import redis_cache
+from src.config import settings
+from src.logger import logger
+from src.orchestrator import handle_incoming
 
 
 @retry(

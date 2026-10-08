@@ -7,10 +7,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-import database.models  # noqa: F401
-from database.engines import write_engine
-from database.models.oauth_credentials import OauthCredentials
-from database.session import get_db
+import src.database.models  # noqa: F401
+from src.database.engines import write_engine
+from src.database.models.oauth_credentials import OauthCredentials
+from src.database.session import get_db
 
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',"https://www.googleapis.com/auth/gmail.compose"]
 TOKEN_PATH = 'gmail_token.json'

@@ -8,9 +8,9 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field, SecretStr
 
-from celery_main import app
-from config import settings
-from rag_config import (
+from src.celery_main import app
+from src.config import settings
+from src.rag_config import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     CLAUDE_CATEGORIZATION_MODEL,

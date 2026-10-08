@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Security, UploadFile, status
 
-from api.dependencies import verify_api_key
-from ingest import ingest_documents
+from src.api.dependencies import verify_api_key
+from src.ingest import ingest_documents
 
 router = APIRouter()
 

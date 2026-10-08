@@ -15,11 +15,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from database.models.base import Base
+from src.database.models.base import Base
 
 if TYPE_CHECKING:
-    from database.models.order import Order
-    from database.models.tenant import Tenant
+    from src.database.models.order import Order
+    from src.database.models.tenant import Tenant
 
 class Status(enum.Enum):
    PENDING_REVIEW = "pending_review"

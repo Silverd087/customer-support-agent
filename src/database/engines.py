@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine
 
-from config import settings
+from src.config import settings
 
 write_url = f"postgresql+psycopg2://{settings.write_role_user}:{settings.write_role_password}@{settings.db_host}/{settings.db_name}"
 write_engine = create_engine(url=write_url)

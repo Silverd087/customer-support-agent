@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from langchain.messages import ToolMessage
 from langchain_classic.docstore.document import Document
 
-from main import app
+from src.main import app
 
 
 @pytest.fixture

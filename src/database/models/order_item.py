@@ -4,14 +4,14 @@ from typing import TYPE_CHECKING
 from sqlalchemy import UUID, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from database.models.base import Base
+from src.database.models.base import Base
 
 if TYPE_CHECKING:
-    from database.models.order import Order
-    from database.models.order_return import OrderReturn
-    from database.models.product import Product
-    from database.models.tenant import Tenant
-    from database.models.warranty_claim import WarrantyClaim
+    from src.database.models.order import Order
+    from src.database.models.order_return import OrderReturn
+    from src.database.models.product import Product
+    from src.database.models.tenant import Tenant
+    from src.database.models.warranty_claim import WarrantyClaim
 
 class OrderItem(Base):
     __tablename__ = "order_items"

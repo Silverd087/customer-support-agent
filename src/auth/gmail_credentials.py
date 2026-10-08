@@ -13,10 +13,10 @@ from tenacity import (
     wait_exponential,
 )
 
-from database.engines import write_engine
-from database.models.oauth_credentials import OauthCredentials
-from database.session import get_db
-from logger import logger
+from src.database.engines import write_engine
+from src.database.models.oauth_credentials import OauthCredentials
+from src.database.session import get_db
+from src.logger import logger
 
 
 class GmailCredentialsNotFound(Exception):

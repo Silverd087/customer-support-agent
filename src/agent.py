@@ -1,7 +1,7 @@
 import asyncio
 from uuid import uuid4
 
-from orchestrator import handle_incoming
+from src.orchestrator import handle_incoming
 
 thread_id = uuid4()
 async def main():

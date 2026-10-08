@@ -1,8 +1,8 @@
 
 from fastapi import FastAPI
 
-from adapters import voice, whatsapp
-from api import ingestion
+from src.adapters import voice, whatsapp
+from src.api import ingestion
 
 app = FastAPI()
 app.include_router(router=whatsapp.router,prefix="/api")

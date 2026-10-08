@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from requests.exceptions import ConnectionError, HTTPError
 
-from adapters.utils import is_transient_post_error, verify_meta_signature
+from src.adapters.utils import is_transient_post_error, verify_meta_signature
 
 
 class TestVerifySignature:

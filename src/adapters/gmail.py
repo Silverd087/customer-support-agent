@@ -4,10 +4,10 @@ import time
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from adapters.utils import extract_email_body
-from auth.gmail_credentials import get_gmail_service
-from logger import logger
-from orchestrator import handle_incoming
+from src.adapters.utils import extract_email_body
+from src.auth.gmail_credentials import get_gmail_service
+from src.logger import logger
+from src.orchestrator import handle_incoming
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))

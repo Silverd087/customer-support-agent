@@ -3,7 +3,7 @@ import secrets
 from fastapi import HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 
-from config import settings
+from src.config import settings
 
 ingestion_api_key = APIKeyHeader(name="X-API-Key")
 

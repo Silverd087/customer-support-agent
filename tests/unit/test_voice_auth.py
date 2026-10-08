@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException, Request, status
 
-from adapters.voice import verify_twilio_signature
+from src.adapters.voice import verify_twilio_signature
 
 
 class TestVoiceAuth:

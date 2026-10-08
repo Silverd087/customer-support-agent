@@ -12,10 +12,10 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
-from config import settings
-from logger import logger
-from rag_config import COLLECTION_NAME, EMBEDDING_MODEL, GEMINI_MODEL, RETRIEVAL_K
-from retries import invoke_with_retry
+from src.config import settings
+from src.logger import logger
+from src.rag_config import COLLECTION_NAME, EMBEDDING_MODEL, GEMINI_MODEL, RETRIEVAL_K
+from src.retries import invoke_with_retry
 
 load_dotenv()
 CRITIQUE_SYSTEM_PROMPT = """You are a fact-checker reviewing a draft customer support answer before it's sent to a customer.
@@ -80,6 +80,7 @@ def search_knowledge_base(query: str):
     result =  vectorstore.similarity_search_with_score(query=query,k=RETRIEVAL_K)
     best_distance = result[0][1]
     confidence = 1 - (best_distance/2)
+    logger.info("search_knowledge_base",query=query,num_chunks=len(result),confidence=confidence)
     artifact = {"context_chunks": [doc.page_content for doc,_ in result],"confidence":confidence}
     content =  "\n\n".join(doc.page_content for doc, _ in result)
     return content,artifact
@@ -146,4 +147,5 @@ def rag_specialist(question:str):
     if confidence and confidence < RAG_CONFIDENCE_THRESHOLD:
         logger.warning("rag_low_confidence", question=question, confidence=confidence)
         return f"{answer}\n\n[LOW_CONFIDENCE: retrieval score {confidence:.2f}]"
+    logger.info("rag_confidence_ok", question=question, confidence=confidence)
     return answer

@@ -6,20 +6,20 @@ from typing import TYPE_CHECKING
 from sqlalchemy import UUID, DateTime, Enum, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from database.models.base import Base
+from src.database.models.base import Base
 
 if TYPE_CHECKING:
-    from database.models.customer import Customer
-    from database.models.escalation import Escalation
-    from database.models.order import Order
-    from database.models.order_item import OrderItem
-    from database.models.order_return import OrderReturn
-    from database.models.payment import Payment
-    from database.models.pending_email_send import PendingEmailSend
-    from database.models.pending_refund import PendingRefund
-    from database.models.product import Product
-    from database.models.subscription import Subscription
-    from database.models.warranty_claim import WarrantyClaim
+    from src.database.models.customer import Customer
+    from src.database.models.escalation import Escalation
+    from src.database.models.order import Order
+    from src.database.models.order_item import OrderItem
+    from src.database.models.order_return import OrderReturn
+    from src.database.models.payment import Payment
+    from src.database.models.pending_email_send import PendingEmailSend
+    from src.database.models.pending_refund import PendingRefund
+    from src.database.models.product import Product
+    from src.database.models.subscription import Subscription
+    from src.database.models.warranty_claim import WarrantyClaim
 
 class Plan(enum.Enum):
     TRIAL = "trial"

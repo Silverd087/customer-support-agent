@@ -1,6 +1,6 @@
 import base64
 
-from adapters.utils import extract_email_body
+from src.adapters.utils import extract_email_body
 
 
 class TestExtractEmail:

@@ -4,7 +4,7 @@ import pytest
 from langchain.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
 from redis.exceptions import RedisError
 
-from orchestrator import handle_incoming, orchestrator_graph
+from src.orchestrator import handle_incoming, orchestrator_graph
 
 
 class TestOrchestrator:

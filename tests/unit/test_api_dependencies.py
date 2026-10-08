@@ -1,8 +1,8 @@
 import pytest
 from fastapi import HTTPException, status
 
-from api.dependencies import verify_api_key
-from config import settings
+from src.api.dependencies import verify_api_key
+from src.config import settings
 
 
 class TestApiDependencies:
