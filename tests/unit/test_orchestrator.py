@@ -24,7 +24,7 @@ class TestOrchestrator:
             })],
         )
         final_reply = AIMessage("I've flagged this for a teammate.")
-        mocker.patch("orchestrator.invoke_with_retry", side_effect=[escalate_call, final_reply])
+        mocker.patch("src.orchestrator.invoke_with_retry", side_effect=[escalate_call, final_reply])
         fake_escalation = Mock()
         fake_escalation.id = "escalation-uuid-778"
         mock_db = MagicMock()
@@ -33,7 +33,7 @@ class TestOrchestrator:
         mock_db.return_value.__enter__.return_value = mock_db
         mock_db.return_value.__exit__.return_value = False
 
-        mocker.patch("orchestrator.get_db",mock_db)
+        mocker.patch("src.orchestrator.get_db",mock_db)
 
         test_graph = orchestrator_graph.compile(checkpointer=False)
         result = test_graph.invoke({
@@ -57,7 +57,7 @@ class TestOrchestrator:
         )
         final_reply = AIMessage(content="Our return policy allows...")
 
-        mocker.patch("orchestrator.invoke_with_retry", side_effect=[tool_call_msg, final_reply])
+        mocker.patch("src.orchestrator.invoke_with_retry", side_effect=[tool_call_msg, final_reply])
 
         test_graph = orchestrator_graph.compile(checkpointer=False)
         result = test_graph.invoke({
@@ -73,7 +73,7 @@ class TestOrchestrator:
     def test_orchestrator_ends_when_no_tool_calls(self,mocker):
         tool_call_msg = AIMessage(content="Test question")
 
-        mocker.patch("orchestrator.invoke_with_retry", return_value=tool_call_msg)
+        mocker.patch("src.orchestrator.invoke_with_retry", return_value=tool_call_msg)
 
         test_graph = orchestrator_graph.compile(checkpointer=False)
         result = test_graph.invoke({
@@ -88,8 +88,8 @@ class TestOrchestrator:
         mock_redis.incr.return_value = 6
         mock_ensure_ready = AsyncMock(return_value=None)
 
-        mocker.patch("orchestrator.redis_cache",mock_redis)
-        mocker.patch("orchestrator._ensure_ready",mock_ensure_ready)
+        mocker.patch("src.orchestrator.redis_cache",mock_redis)
+        mocker.patch("src.orchestrator._ensure_ready",mock_ensure_ready)
         result = await handle_incoming("random query","thread123","web")
         assert result == "rate limit exceeded, wait a few minutes before making another request"
 
@@ -98,14 +98,14 @@ class TestOrchestrator:
         final_reply = AIMessage(content="Test reply")
         mock_ensure_ready = AsyncMock(return_value=None)
 
-        mock_redis = mocker.patch("orchestrator.redis_cache")
+        mock_redis = mocker.patch("src.orchestrator.redis_cache")
         mock_redis.incr.side_effect = RedisError("Connection refused")
 
-        mocker.patch("orchestrator.invoke_with_retry", return_value=final_reply)
-        mocker.patch("orchestrator._ensure_ready",mock_ensure_ready)
+        mocker.patch("src.orchestrator.invoke_with_retry", return_value=final_reply)
+        mocker.patch("src.orchestrator._ensure_ready",mock_ensure_ready)
 
         test_graph = orchestrator_graph.compile(checkpointer=False)
-        mocker.patch("orchestrator.orchestrator",test_graph)
+        mocker.patch("src.orchestrator.orchestrator",test_graph)
 
 
         result = await handle_incoming("random query","thread123","web")

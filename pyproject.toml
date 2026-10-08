@@ -62,4 +62,5 @@ files = ["src"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
-pythonpath = "./src"
+pythonpath = ["."]
+testpaths = ["tests"]

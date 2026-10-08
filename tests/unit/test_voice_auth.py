@@ -12,7 +12,7 @@ class TestVoiceAuth:
         mock_validator = Mock()
         mock_validator.validate.return_value = False
 
-        mocker.patch("adapters.voice.validator",mock_validator)
+        mocker.patch("src.adapters.voice.validator",mock_validator)
         scope = {
             "type": "http",
             "method": "POST",
@@ -36,7 +36,7 @@ class TestVoiceAuth:
     async def test_verify_twilio_signature_stores_call_sid_on_success(self,mocker):
         mock_validator = Mock()
         mock_validator.validate.return_value = True
-        mocker.patch("adapters.voice.validator",mock_validator)
+        mocker.patch("src.adapters.voice.validator",mock_validator)
         body_data = b"CallSid=CA123456789&From=%2B1234567890"
 
         scope = {
@@ -56,7 +56,7 @@ class TestVoiceAuth:
             }
         
         request = Request(scope, receive)
-        mock_redis = mocker.patch("adapters.voice.redis_cache")
+        mock_redis = mocker.patch("src.adapters.voice.redis_cache")
         await verify_twilio_signature(request)
         mock_redis.set.assert_called_once_with("verified call:CA123456789",1,ex=60)
 

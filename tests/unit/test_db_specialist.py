@@ -20,7 +20,7 @@ class TestDbSpecialist:
         mock_db.execute.return_value.scalar_one_or_none.return_value = fake_order
         mock_db.scalars.return_value.one_or_none.return_value = fake_refund
 
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         result = create_refund_request.func("order123", "test@example.com", "damaged on arrival")
@@ -39,7 +39,7 @@ class TestDbSpecialist:
         ]
         mock_db.scalars.return_value.one_or_none.return_value = None
 
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         result = create_refund_request.func("order123", "test@example.com", "damaged on arrival")
@@ -54,7 +54,7 @@ class TestDbSpecialist:
         mock_db = MagicMock()
 
         mock_db.scalar.return_value = None
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
 
@@ -76,7 +76,7 @@ class TestDbSpecialist:
         fake_row2.current_period_end = "01-01-2027"
 
         mock_db = Mock()
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         mock_db.scalars.return_value.all.return_value = [fake_row1,fake_row2]
@@ -91,7 +91,7 @@ class TestDbSpecialist:
     def test_get_subscription_status_not_found_message(self,mocker):
 
         mock_db = Mock()
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         mock_db.scalars.return_value.all.return_value = []
@@ -112,7 +112,7 @@ class TestDbSpecialist:
         fake_row2.issue_description = "doesn't work"
 
         mock_db = Mock()
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         mock_db.scalars.return_value.all.return_value = [fake_row1,fake_row2]
@@ -125,7 +125,7 @@ class TestDbSpecialist:
         assert "\n".join(lines) == get_warranty_claim_status.func("ORD-1234","test@exemple.com")     
     def test_get_warranty_claim_status_not_found_message(self,mocker):
         mock_db = Mock()
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         mock_db.scalars.return_value.all.return_value = []
@@ -145,7 +145,7 @@ class TestDbSpecialist:
         fake_row2.reason = "doesn't work"
 
         mock_db = Mock()
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         mock_db.scalars.return_value.all.return_value = [fake_row1,fake_row2]
@@ -159,7 +159,7 @@ class TestDbSpecialist:
 
     def test_get_return_status_not_found_message(self,mocker):
         mock_db = Mock()
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
         mock_db.scalars.return_value.all.return_value = []
@@ -169,7 +169,7 @@ class TestDbSpecialist:
     def test_create_return_request_not_found(self,mocker):
         mock_db = Mock()
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
 
@@ -182,7 +182,7 @@ class TestDbSpecialist:
         mock_db.execute.return_value.scalar_one_or_none.return_value = order_item
         mock_db.scalars.return_value.one_or_none.return_value = order_return
         mock_db.commit.return_value = None
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
 
@@ -195,7 +195,7 @@ class TestDbSpecialist:
         mock_db.execute.return_value.scalar_one_or_none.side_effect = [order_item,order_return]
         mock_db.scalars.return_value.one_or_none.return_value = None
         mock_db.commit.return_value = None
-        mock_get_db = mocker.patch("specialists.db.get_db")
+        mock_get_db = mocker.patch("src.specialists.db.get_db")
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_get_db.return_value.__exit__.return_value = False
 

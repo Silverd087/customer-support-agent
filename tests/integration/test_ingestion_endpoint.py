@@ -28,7 +28,7 @@ class TestIngestion:
         mock_task = mocker.Mock()
         mock_task.id = "task123"
 
-        mock_delay = mocker.patch("api.ingestion.ingest_documents.delay")
+        mock_delay = mocker.patch("src.api.ingestion.ingest_documents.delay")
         mock_delay.return_value = mock_task
 
         response = test_client.post("/api/documents/ingestion",headers=headers,files=file)
